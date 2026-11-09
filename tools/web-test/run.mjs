@@ -31,7 +31,8 @@ await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const base = `http://127.0.0.1:${server.address().port}`;
 const core = fs.readFileSync(path.join(assets, 'inject/relay-core.js'), 'utf8');
 
-const browser = await chromium.launch();
+// CHROME_PATH lets the checks run against an installed Chrome when Playwright's own build is not downloaded.
+const browser = await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH, args: ['--no-sandbox'] } : {});
 let failures = 0;
 async function test(name, fn) {
   try {
@@ -175,8 +176,15 @@ await test('core: reports a clear error when there is no input (e.g. login page)
 
 // ---------------- UI (mock host) ----------------
 
-async function uiPage(viewport, query, mobile = true) {
+async function uiPage(viewport, query, mobile = true, history = null) {
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: 2, isMobile: mobile, hasTouch: mobile, locale: 'ru-RU' });
+  if (history) {
+    await ctx.addInitScript((h) => {
+      if (sessionStorage.getItem('seeded')) return;
+      localStorage.setItem('relay.h.chatgpt|new', JSON.stringify(h));
+      sessionStorage.setItem('seeded', '1');
+    }, history);
+  }
   const page = await ctx.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
@@ -272,6 +280,115 @@ await test('ui: tablet — service editor with picker and diagnostics', async ()
   await page.waitForSelector('.sheet .diag');
   await page.waitForTimeout(300);
   await page.screenshot({ path: out('09-tablet-editor.png') });
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+function history(n, extra = []) {
+  const msgs = [];
+  for (let i = 0; i < n; i++) {
+    msgs.push(i % 2 === 0
+      ? { id: 'u' + i, role: 'user', text: `Вопрос №${i / 2 + 1}: что лежит в папке ${i}?` }
+      : { id: 'a' + i, role: 'assistant', text: `Ответ №${(i + 1) / 2}. ` + 'Здесь длинный ответ, чтобы лента была выше экрана. '.repeat(3) });
+  }
+  return msgs.concat(extra);
+}
+
+/** How far the newest thread item sticks out below the visible part of the thread (≤ 0 — fully visible). */
+const lastGap = (page) => page.evaluate(() => {
+  const t = document.querySelector('#thread').getBoundingClientRect();
+  const items = document.querySelectorAll('#threadInner > *');
+  return Math.round(items[items.length - 1].getBoundingClientRect().bottom - t.bottom);
+});
+const connected = (page) => page.waitForFunction(() => document.querySelector('#topSub').textContent.includes('подключено'));
+
+await test('ui: phone — newest message stays in view when the keyboard opens', async () => {
+  const { page, ctx, errors } = await uiPage({ width: 390, height: 780 }, '', true, history(40));
+  await connected(page);
+  await page.waitForSelector('.msg.user');
+  await page.waitForTimeout(300);
+  assert.ok(await lastGap(page) <= 1, 'chat opens at the newest message');
+  await page.focus('#input');
+  await page.setViewportSize({ width: 390, height: 480 }); // soft keyboard with adjustResize
+  await page.waitForTimeout(400);
+  const gap = await lastGap(page);
+  await page.screenshot({ path: out('10-phone-keyboard.png') });
+  assert.ok(gap <= 1, `newest message hidden by ${gap}px`);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+await test('ui: phone landscape — every chat in the drawer can be reached and opened', async () => {
+  const { page, ctx, errors } = await uiPage({ width: 915, height: 412 }, '');
+  await connected(page);
+  await page.click('#menuBtn');
+  await page.waitForSelector('.chat-item');
+  await page.waitForTimeout(400);
+  await page.screenshot({ path: out('11-landscape-drawer.png') });
+  const last = page.locator('.chat-item').last();
+  await last.scrollIntoViewIfNeeded();
+  const box = await last.boundingBox();
+  assert.ok(box && box.y >= 0 && box.y + box.height <= 412, `last chat off screen: ${JSON.stringify(box)}`);
+  const hit = await page.evaluate(({ x, y }) => !!document.elementFromPoint(x, y)?.closest('.chat-item'), { x: box.x + box.width / 2, y: box.y + box.height / 2 });
+  assert.ok(hit, 'last chat is covered by something else');
+  await last.click();
+  await page.waitForFunction(() => window.relayUI._state.url.endsWith('/c/a5'));
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+await test('ui: scrolling up while the AI types is not yanked back; ↓ returns to the end', async () => {
+  const { page, ctx, errors } = await uiPage({ width: 390, height: 780 }, '', true, history(30));
+  await connected(page);
+  await page.fill('#input', 'Расскажи, что ты умеешь');
+  await page.click('#sendBtn');
+  await page.waitForFunction(() => window.relayUI._state.busy);
+  await page.mouse.move(195, 300);
+  await page.mouse.wheel(0, -4000);
+  await page.waitForSelector('.msg.ai.live .caret', { timeout: 8000 });
+  await page.waitForTimeout(700);
+  const away = await page.evaluate(() => { const t = document.querySelector('#thread'); return t.scrollHeight - t.scrollTop - t.clientHeight; });
+  assert.ok(away > 300, `thread jumped back to the bottom while streaming (${away}px from the end)`);
+  assert.ok(await page.locator('#jumpBtn').isVisible(), '↓ button is shown');
+  await page.screenshot({ path: out('12-phone-scrolled-up.png') });
+  await page.click('#jumpBtn');
+  await page.waitForTimeout(200);
+  assert.ok(await lastGap(page) <= 1, 'jump button returns to the newest message');
+  await page.waitForFunction(() => !window.relayUI._state.busy, null, { timeout: 15000 });
+  assert.ok(await lastGap(page) <= 1, 'stays at the end after the reply finishes');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+await test('ui: chats and services cannot be switched while the agent works', async () => {
+  const { page, ctx, errors } = await uiPage({ width: 1180, height: 820 }, '', true);
+  await page.waitForSelector('.chat-item');
+  await page.fill('#input', 'Создай папку «тест» в Загрузках');
+  await page.click('#sendBtn');
+  await page.waitForSelector('[data-approve="once"]');
+  const key = await page.evaluate(() => window.relayUI._state.key);
+  await page.click('.chat-item >> nth=3');
+  await page.waitForSelector('.toast:has-text("Агент работает")');
+  assert.equal(await page.evaluate(() => window.relayUI._state.key), key, 'chat must not change mid-turn');
+  await page.click('#newChatBtn');
+  assert.equal(await page.evaluate(() => window.relayUI._state.key), key);
+  assert.equal(await page.locator('[data-approve="once"]').count(), 1, 'approval card is still on screen');
+  await page.click('[data-approve="deny"]');
+  await page.waitForFunction(() => !window.relayUI._state.busy, null, { timeout: 15000 });
+  await page.click('.chat-item >> nth=3');
+  await page.waitForFunction((k) => window.relayUI._state.key !== k, key);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+await test('ui: approval cards from a previous session are inert; odd tool names render', async () => {
+  const stale = [{ id: 'old1', role: 'tool', tool: 'mkdir', args: { path: '~/x' }, risk: 'WRITE', status: 'pending', needsApproval: true }];
+  const { page, ctx, errors } = await uiPage({ width: 390, height: 780 }, '', true, history(2, stale));
+  await page.waitForSelector('.tool[data-id="old1"]');
+  assert.equal(await page.locator('.tool[data-id="old1"] [data-approve]').count(), 0, 'dead buttons rendered');
+  assert.match(await page.locator('.tool[data-id="old1"] .status').innerText(), /прервано/);
+  await page.evaluate(() => window.relayUI.receive({ type: 'approval', source: 'mcp', risk: 'WRITE', call: { id: 'p1', tool: 'constructor', args: {} } }));
+  await page.waitForSelector('.tool[data-id="p1"] [data-approve="once"]');
   assert.deepEqual(errors, []);
   await ctx.close();
 });

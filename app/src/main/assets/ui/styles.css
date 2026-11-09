@@ -46,7 +46,7 @@ input, textarea { font: inherit; color: inherit; }
 
 .sidebar {
   position: fixed; z-index: 30; inset: 0 auto 0 0; width: min(88vw, var(--sidebar-w));
-  display: flex; flex-direction: column; gap: 12px; padding: 16px 14px 12px;
+  display: flex; flex-direction: column; gap: 12px; padding: 16px 14px max(12px, env(safe-area-inset-bottom, 0px));
   background: rgba(14, 15, 22, 0.97); border-right: 1px solid var(--line);
   backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
   transform: translateX(-104%); transition: transform .32s var(--ease);
@@ -150,7 +150,7 @@ input, textarea { font: inherit; color: inherit; }
 .title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; text-align: left; padding: 4px; border-radius: 12px; }
 .title-text { display: flex; flex-direction: column; min-width: 0; }
 .t1 { font-weight: 650; font-size: 15.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.t2 { font-size: 12.5px; color: var(--muted); display: flex; align-items: center; gap: 6px; white-space: nowrap; overflow: hidden; }
+.t2 { font-size: 12.5px; color: var(--muted); display: flex; align-items: center; gap: 6px; white-space: nowrap; overflow: hidden; padding: 3px; margin: -3px; }
 
 .banner {
   margin: 10px 12px 0; padding: 12px 14px; border-radius: 16px; display: flex; align-items: center; gap: 12px;
@@ -161,7 +161,15 @@ input, textarea { font: inherit; color: inherit; }
 .banner .txt { flex: 1; line-height: 1.45; }
 .banner.bad { background: rgba(248, 113, 113, .08); border-color: rgba(248, 113, 113, .3); color: #fecaca; }
 
-.thread { flex: 1; overflow-y: auto; overscroll-behavior: contain; scroll-behavior: smooth; }
+.thread-wrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* No smooth scrolling: it lags behind streaming text and leaves the newest lines below the fold. */
+.thread { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.jump-btn {
+  position: absolute; right: 16px; bottom: 12px; z-index: 6; width: 42px; height: 42px; border-radius: 50%;
+  display: grid; place-items: center; background: var(--solid-2); border: 1px solid var(--line-2); color: var(--text);
+  box-shadow: 0 12px 30px -10px rgba(0, 0, 0, .9); animation: rise .2s var(--ease);
+}
+.jump-btn.new::after { content: ""; position: absolute; top: 3px; right: 3px; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--solid-2); }
 .thread-inner { max-width: 780px; margin: 0 auto; padding: 18px 14px 28px; display: flex; flex-direction: column; gap: 14px; }
 
 /* empty / onboarding */
@@ -224,7 +232,7 @@ input, textarea { font: inherit; color: inherit; }
 .status.running { background: rgba(251, 191, 36, .12); color: #fde68a; }
 .status.done { background: rgba(52, 211, 153, .12); color: #a7f3d0; }
 .status.error { background: rgba(248, 113, 113, .12); color: #fecaca; }
-.status.denied { background: var(--panel-2); color: var(--muted); }
+.status.denied, .status.stale { background: var(--panel-2); color: var(--muted); }
 .spin { width: 11px; height: 11px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .tool details { border-top: 1px solid var(--line); }
@@ -240,7 +248,7 @@ input, textarea { font: inherit; color: inherit; }
 .ask-actions { display: flex; gap: 8px; padding: 12px 14px 14px; flex-wrap: wrap; }
 .ask-actions .btn { flex: 1; min-width: 96px; height: 40px; }
 
-.note { align-self: center; max-width: 92%; font-size: 12.5px; color: var(--muted); display: flex; align-items: center; gap: 7px; padding: 6px 12px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); text-align: center; }
+.note { align-self: center; max-width: 92%; font-size: 12.5px; color: var(--muted); display: flex; align-items: center; gap: 7px; padding: 6px 12px; border-radius: 16px; background: var(--panel); border: 1px solid var(--line); text-align: center; }
 .note.err { color: #fecaca; background: rgba(248, 113, 113, .08); border-color: rgba(248, 113, 113, .28); border-radius: 14px; text-align: left; }
 
 /* composer */
@@ -269,7 +277,7 @@ input, textarea { font: inherit; color: inherit; }
 .sheet-backdrop { position: absolute; inset: 0; background: rgba(4, 5, 9, .6); animation: fade .25s; }
 @keyframes fade { from { opacity: 0; } }
 .sheet {
-  position: relative; width: 100%; max-height: 90vh; overflow-y: auto; overscroll-behavior: contain;
+  position: relative; width: 100%; max-height: 90vh; max-height: 90dvh; overflow-y: auto; overscroll-behavior: contain;
   background: #11131b; border: 1px solid var(--line-2); border-bottom: 0; border-radius: 26px 26px 0 0;
   padding: 10px 18px calc(20px + env(safe-area-inset-bottom, 0px)); animation: up .34s var(--ease);
   box-shadow: 0 -30px 80px -30px rgba(0, 0, 0, .8);
@@ -348,14 +356,14 @@ input, textarea { font: inherit; color: inherit; }
 
 /* ---------- tablet & desktop ---------- */
 
-@media (min-width: 900px) {
+@media (min-width: 900px) and (min-height: 560px) {
   .sidebar { position: relative; transform: none; width: var(--sidebar-w); flex: none; z-index: 1; background: rgba(13, 14, 20, .75); }
   .scrim, .only-mobile { display: none !important; }
   .topbar { padding: 12px 20px; }
   .thread-inner { padding: 26px 24px 36px; gap: 16px; }
   .composer { padding: 10px 24px 18px; }
   .sheet-layer { align-items: center; }
-  .sheet { width: min(620px, 92vw); border-radius: 26px; border-bottom: 1px solid var(--line-2); max-height: 86vh; padding-bottom: 22px; }
+  .sheet { width: min(620px, 92vw); border-radius: 26px; border-bottom: 1px solid var(--line-2); max-height: 86vh; max-height: 86dvh; padding-bottom: 22px; }
   .sheet .handle { display: none; }
   .suggest { grid-template-columns: 1fr 1fr; }
   .tool { margin-left: 46px; }
@@ -365,6 +373,16 @@ input, textarea { font: inherit; color: inherit; }
 @media (max-width: 380px) {
   .suggest { grid-template-columns: 1fr; }
   .composer-hint { display: none; }
+}
+
+/* Short screens (phone in landscape, split screen): the fixed sidebar header used to squeeze the chat
+   list to a few pixels, so the whole drawer scrolls instead and the footer stays pinned. */
+@media (max-height: 560px) {
+  .sidebar { overflow-y: auto; gap: 8px; padding-top: 10px; padding-bottom: 0; }
+  .brand { display: none; }
+  .chat-list { flex: none; overflow: visible; }
+  .side-foot { position: sticky; bottom: 0; margin-top: auto; padding-bottom: max(10px, env(safe-area-inset-bottom, 0px)); background: rgb(14, 15, 22); }
+  .hero { padding-top: 2vh; }
 }
 
 @media (prefers-reduced-motion: reduce) {
