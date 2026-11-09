@@ -15,6 +15,7 @@ import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.URLDecoder
+import java.util.UUID
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
@@ -49,7 +50,8 @@ class McpHandler(
                 val name = params.optString("name")
                 if (specs.none { it.name == name }) return error(id, -32602, "Unknown tool: $name")
                 val args = params.optJSONObject("arguments") ?: JSONObject()
-                val r = callTool(ToolCall("mcp-$id", name, args))
+                // JSON-RPC ids repeat across clients and sessions; the UI and approvals need a unique call id.
+                val r = callTool(ToolCall("mcp-" + UUID.randomUUID().toString().take(8), name, args))
                 result(
                     id,
                     JSONObject()
@@ -153,7 +155,9 @@ class McpServer(
     private fun route(req: Request): Response {
         if (req.method == "OPTIONS") return Response(204)
         if (req.path != "/mcp") return Response(404, """{"error":"not found"}""")
-        val auth = req.headers["authorization"]?.removePrefix("Bearer ")?.trim() ?: req.query["token"]
+        val header = req.headers["authorization"]?.trim()
+        // The auth scheme name is case-insensitive (RFC 9110), so "bearer x" must work too.
+        val auth = header?.let { if (it.startsWith("bearer ", ignoreCase = true)) it.substring(7).trim() else it } ?: req.query["token"]
         if (auth != token) {
             return Response(401, """{"error":"unauthorized"}""", extra = mapOf("WWW-Authenticate" to "Bearer"))
         }
