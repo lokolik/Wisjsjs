@@ -11,3 +11,4 @@ captures/
 node_modules/
 tools/web-test/out/
 .hoplite/
+.kotlin/
