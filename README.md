@@ -97,8 +97,14 @@ tools/web-test/               проверки relay-core.js и сценарии
 ```
 
 ```bash
+<<<<<<< HEAD
 ./gradlew testDebugUnitTest assembleDebug          # JVM-тесты + APK (JDK 17, Android SDK 35)
 cd tools/web-test && npm ci && npx playwright install chromium && node run.mjs
+=======
+./gradlew testDebugUnitTest assembleDebug          # JVM-тесты ядра + APK (нужны JDK 17 и Android SDK 35)
+cd tools/web-test && npm ci && npx playwright install chromium && node run.mjs   # проверки в Chromium
+# или с уже установленным Chrome: CHROME_PATH=/path/to/chrome node run.mjs
+>>>>>>> 4cec581 (Fix cut-off chat list and thread scrolling, harden agent/MCP/site lifecycle)
 ```
 
 Демо интерфейса в браузере: раздайте `app/src/main/assets` статическим сервером и откройте `/ui/index.html` (`?fresh=1` — первый запуск с мастером, `?adapter=app-gemini` — не установленное приложение).

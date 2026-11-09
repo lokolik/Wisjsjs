@@ -91,16 +91,19 @@ class RelayController(
         listOf("Download", "Documents", "Pictures", "Movies", "Music").map { File(r, it) }
     })
 
+    private class PendingApproval(val source: String, val decision: CompletableDeferred<Decision>)
+
     private val sessions = LinkedHashMap<String, SiteSession>()
     private var current: JSONObject? = null
     private var runJob: Job? = null
     private var appJob: Job? = null
     private var chatsJob: Job? = null
-    private val pendingApprovals = ConcurrentHashMap<String, CompletableDeferred<Decision>>()
+    private val pendingApprovals = ConcurrentHashMap<String, PendingApproval>()
     private var mcp: McpServer? = null
     private var picking: String? = null
     private var siteShown = false
 
+<<<<<<< HEAD
     /** Files in the composer, not yet sent. */
     private val staged = LinkedHashMap<String, Attachment>()
 
@@ -117,6 +120,11 @@ class RelayController(
     private val downloads = ConcurrentHashMap<Long, String>()
     private val carded = HashSet<String>()
     private var downloadReceiver: BroadcastReceiver? = null
+=======
+    /** Key of an open "new chat" page that already got the preamble; kept in memory only (see [ChatKeys.isFresh]). */
+    private var preambleOnPage: String? = null
+    private var preambleAt = 0L
+>>>>>>> 4cec581 (Fix cut-off chat list and thread scrolling, harden agent/MCP/site lifecycle)
 
     fun start() {
         if (prefs.mcpEnabled) setMcp(true)
@@ -162,7 +170,7 @@ class RelayController(
             "newChat" -> newChat()
             "send" -> send(m.getString("text"), m.optBoolean("agent", true), m.optJSONArray("attachments"))
             "stop" -> stop()
-            "approve" -> pendingApprovals[m.getString("callId")]?.complete(
+            "approve" -> pendingApprovals[m.getString("callId")]?.decision?.complete(
                 when (m.optString("decision")) {
                     "always" -> Decision.ALWAYS
                     "once" -> Decision.ONCE
@@ -197,6 +205,7 @@ class RelayController(
             }
             "resendPreamble" -> {
                 prefs.forgetPreamble(chatKey())
+                preambleOnPage = null
                 toast("Инструкция для ИИ будет добавлена к следующему сообщению")
             }
             "pickFiles" -> pickFiles()
@@ -323,17 +332,24 @@ class RelayController(
 
     private fun onSiteEvent(s: SiteSession, ev: JSONObject) {
         when (ev.optString("type")) {
-            "pageLoaded" -> if (s === currentSession()) {
-                scope.launch {
-                    refreshStatus(s)
-                    emit(JSONObject().put("type", "url").put("adapterId", s.id).put("url", ev.optString("url")))
+            "pageLoaded" -> {
+                onPageUrl(s, ev.optString("url"), fullLoad = true)
+                if (s === currentSession()) {
+                    scope.launch {
+                        refreshStatus(s)
+                        emit(JSONObject().put("type", "url").put("adapterId", s.id).put("url", ev.optString("url")))
+                    }
+                    scheduleChats(s)
                 }
-                scheduleChats(s)
             }
-            "urlChanged" -> if (s === currentSession()) {
-                emit(JSONObject().put("type", "url").put("adapterId", s.id).put("url", ev.optString("url")))
-                scheduleChats(s)
+            "urlChanged" -> {
+                onPageUrl(s, ev.optString("url"), fullLoad = false)
+                if (s === currentSession()) {
+                    emit(JSONObject().put("type", "url").put("adapterId", s.id).put("url", ev.optString("url")))
+                    scheduleChats(s)
+                }
             }
+            "crashed" -> onSiteCrashed(s)
             "picked", "pickCancelled" -> {
                 picking = null
                 showSite(false)
@@ -343,19 +359,49 @@ class RelayController(
         }
     }
 
+    /** Moves the in-memory preamble mark when a fresh conversation gets its own address, or drops it. */
+    private fun onPageUrl(s: SiteSession, url: String, fullLoad: Boolean) {
+        val mark = preambleOnPage ?: return
+        if (!mark.startsWith(s.id + "|")) return
+        val key = ChatKeys.forUrl(s.adapter, url)
+        if (key == mark) {
+            // Reloading the new-chat page starts a new conversation.
+            if (fullLoad) preambleOnPage = null
+            return
+        }
+        if (!ChatKeys.isFresh(s.adapter, key) && System.currentTimeMillis() - preambleAt < PREAMBLE_CARRY_MS) prefs.markPreamble(key)
+        preambleOnPage = null
+    }
+
+    /** Without handling, a dead renderer kills the whole app; the site is rebuilt instead. */
+    private fun onSiteCrashed(s: SiteSession) {
+        if (sessions[s.id] !== s) return
+        sessions.remove(s.id)
+        siteFrame.removeView(s.webView)
+        s.destroy()
+        if (current?.optString("id") != s.id) return
+        picking = null
+        if (siteShown) showSite(false)
+        toast("Страница ${s.adapter.optString("name")} аварийно закрылась — открываю заново")
+        selectAdapter(s.id)
+    }
+
     private fun scheduleChats(s: SiteSession) {
         chatsJob?.cancel()
         chatsJob = scope.launch {
-            for (d in longArrayOf(900, 2500, 6000)) {
+            // Sites render their history lazily, so keep polling a bit longer while the list is still empty.
+            for ((i, d) in CHAT_POLL_MS.withIndex()) {
                 delay(d)
                 if (s !== currentSession()) return@launch
-                emitChats(s)
+                val found = emitChats(s)
                 refreshStatus(s)
+                if (found > 0 && i >= 2) return@launch
             }
         }
     }
 
-    private suspend fun emitChats(s: SiteSession) {
+    /** @return how many chats were found on the page. */
+    private suspend fun emitChats(s: SiteSession): Int {
         val items = runCatching { s.listChats() }.getOrDefault(JSONArray())
         val a = s.adapter
         if (a.optBoolean("singleThread")) {
@@ -367,6 +413,7 @@ class RelayController(
         } else {
             emit(JSONObject().put("type", "chats").put("adapterId", s.id).put("items", items))
         }
+        return items.length()
     }
 
     private fun emitAppChats(a: JSONObject) {
@@ -412,6 +459,13 @@ class RelayController(
         }
     }
 
+    /** The site WebView is shared by all chats of a service, so navigating mid-turn would abandon the reply. */
+    private fun busyNavigating(): Boolean {
+        if (runJob?.isActive != true) return false
+        toast(BUSY_TEXT)
+        return true
+    }
+
     private fun openChat(href: String) {
         val a = current ?: return
         if (isApp(a)) {
@@ -422,6 +476,8 @@ class RelayController(
             return
         }
         val s = currentSession() ?: return
+        if (busyNavigating()) return
+        preambleOnPage = null
         s.navigate(href)
         emit(JSONObject().put("type", "url").put("adapterId", s.id).put("url", href))
     }
@@ -436,6 +492,8 @@ class RelayController(
             return
         }
         val s = currentSession() ?: return
+        if (busyNavigating()) return
+        preambleOnPage = null
         val url = a.optString("newChatUrl").ifBlank { a.optString("url") }
         s.navigate(url)
         emit(JSONObject().put("type", "url").put("adapterId", s.id).put("url", url))
@@ -449,9 +507,16 @@ class RelayController(
     private suspend fun saveAdapter(adapter: JSONObject) {
         val id = adapter.optString("id")
         if (id.isBlank()) return emitError("У сервиса нет id")
+<<<<<<< HEAD
         listOf("installed", "overridden", "custom", "builtin", "version", "calibrated").forEach { adapter.remove(it) }
+=======
+        listOf("installed", "overridden", "custom", "builtin").forEach { adapter.remove(it) }
+        val base = builtins.firstOrNull { it.optString("id") == id }
+        // Overrides of built-ins keep only what the user changed, so app updates still reach everything else.
+        val stored = if (base != null) adapter.diffFrom(base).put("id", id) else adapter
+>>>>>>> 4cec581 (Fix cut-off chat list and thread scrolling, harden agent/MCP/site lifecycle)
         val list = prefs.customAdapters.objects().filter { it.optString("id") != id }.toMutableList()
-        list += adapter
+        if (base == null || stored.length() > 1) list += stored
         prefs.customAdapters = JSONArray(list)
         val merged = findAdapter(id) ?: return
         sessions[id]?.updateAdapter(merged)
@@ -647,11 +712,17 @@ class RelayController(
 
     // region agent
 
+<<<<<<< HEAD
     private fun chatKey(): String {
         val a = current ?: return "none"
         val id = a.optString("id")
         if (isApp(a)) return "$id|" + (appChatHref ?: appHome(a))
         return "$id|" + normalizeUrl(sessions[id]?.currentUrl ?: a.optString("url"))
+=======
+    private fun chatKey(a: JSONObject? = current): String {
+        a ?: return "none"
+        return ChatKeys.forUrl(a, sessions[a.optString("id")]?.currentUrl ?: a.optString("url"))
+>>>>>>> 4cec581 (Fix cut-off chat list and thread scrolling, harden agent/MCP/site lifecycle)
     }
 
     /** A brand-new chat always needs the tool instructions, whatever was sent from that URL before. */
@@ -688,6 +759,7 @@ class RelayController(
         } else {
             sessions[a.optString("id")] ?: return emitError("Сайт ещё не загружен")
         }
+<<<<<<< HEAD
         val atts = (0 until (attachmentIds?.length() ?: 0)).mapNotNull { staged.remove(attachmentIds!!.optString(it)) }
         emitStaged()
         synchronized(runQueue) {
@@ -698,6 +770,11 @@ class RelayController(
         val fresh = isFreshChat()
         val keyBefore = chatKey()
         val withPreamble = agent && prefs.autoPreamble && (fresh || !prefs.preambleSent(keyBefore))
+=======
+        val keyBefore = chatKey(a)
+        val alreadySent = if (ChatKeys.isFresh(a, keyBefore)) preambleOnPage == keyBefore else prefs.preambleSent(keyBefore)
+        val withPreamble = agent && prefs.autoPreamble && !alreadySent
+>>>>>>> 4cec581 (Fix cut-off chat list and thread scrolling, harden agent/MCP/site lifecycle)
         val first = if (withPreamble) ToolProtocol.withPreamble(preambleContext(), text) else text
         approvals.mode = approvalMode()
         var delivered = false
@@ -721,7 +798,7 @@ class RelayController(
 
             override fun onInfo(text: String) = emitInfo(text)
 
-            override suspend fun requestApproval(call: ToolCall, risk: Risk): Decision = askApproval(call, risk, "chat")
+            override suspend fun requestApproval(call: ToolCall, risk: Risk): Decision = askApproval(call, risk, SOURCE_CHAT)
         }
 
         runJob = scope.launch {
@@ -744,6 +821,7 @@ class RelayController(
                 Log.w(TAG, "agent failed", e)
                 emitError(e.message ?: e.toString())
             } finally {
+<<<<<<< HEAD
                 withContext(NonCancellable) {
                     if (withPreamble && delivered) {
                         prefs.markPreamble(keyBefore)
@@ -760,10 +838,18 @@ class RelayController(
                 delay(wait)
                 if (runJob?.isActive == true) break
                 newFilesNote()
+=======
+                if (withPreamble && delivered) rememberPreamble(a, keyBefore)
+                denyPending(SOURCE_CHAT)
+                emit(JSONObject().put("type", "turn").put("state", "end"))
+                // A new conversation usually shows up in the site's list only after the reply.
+                (target as? SiteSession)?.let { if (it === currentSession()) scheduleChats(it) }
+>>>>>>> 4cec581 (Fix cut-off chat list and thread scrolling, harden agent/MCP/site lifecycle)
             }
         }
     }
 
+<<<<<<< HEAD
     /** Emits cards for files that appeared during the task and describes them for the AI. */
     private suspend fun newFilesNote(): String? {
         val files = withContext(Dispatchers.IO) { tracker.collect { executor.touched.contains(it) } }
@@ -771,12 +857,26 @@ class RelayController(
         emitFiles(files, "new")
         return "Новые файлы на устройстве (появились во время задачи):\n" +
             files.joinToString("\n") { "• ${it.path} (${ToolExecutor.human(it.length())})" }
+=======
+    private fun rememberPreamble(a: JSONObject, keyBefore: String) {
+        val keyAfter = chatKey(a)
+        setOf(keyBefore, keyAfter).filterNot { ChatKeys.isFresh(a, it) }.forEach(prefs::markPreamble)
+        if (ChatKeys.isFresh(a, keyAfter)) {
+            preambleOnPage = keyAfter
+            preambleAt = System.currentTimeMillis()
+        }
+>>>>>>> 4cec581 (Fix cut-off chat list and thread scrolling, harden agent/MCP/site lifecycle)
     }
 
     private fun stop() {
-        pendingApprovals.values.forEach { it.complete(Decision.DENY) }
+        denyPending(SOURCE_CHAT)
         runJob?.cancel()
         appJob?.cancel()
+    }
+
+    /** Only approvals of [source] are denied: ending a chat turn must not reject a waiting MCP call. */
+    private fun denyPending(source: String) {
+        pendingApprovals.values.filter { it.source == source }.forEach { it.decision.complete(Decision.DENY) }
     }
 
     private fun approvalMode() = when (prefs.approvalMode) {
@@ -787,13 +887,14 @@ class RelayController(
 
     private suspend fun askApproval(call: ToolCall, risk: Risk, source: String): Decision {
         val d = CompletableDeferred<Decision>()
-        pendingApprovals[call.id] = d
+        pendingApprovals[call.id] = PendingApproval(source, d)
         emit(
             JSONObject().put("type", "approval").put("source", source).put("risk", risk.name)
                 .put("call", callJson(call)),
         )
         return try {
-            d.await()
+            // An MCP client holds a connection thread open for this call, so it must not wait forever.
+            if (source == SOURCE_MCP) withTimeoutOrNull(MCP_APPROVAL_TIMEOUT_MS) { d.await() } ?: Decision.DENY else d.await()
         } finally {
             pendingApprovals.remove(call.id)
         }
@@ -1042,6 +1143,7 @@ class RelayController(
     // region MCP
 
     private fun setMcp(enabled: Boolean) {
+        denyPending(SOURCE_MCP)
         mcp?.stop()
         mcp = null
         prefs.mcpEnabled = enabled
@@ -1064,7 +1166,7 @@ class RelayController(
             true
         } else {
             emit(toolJson(call, "pending", null, "mcp"))
-            when (askApproval(call, risk, "mcp")) {
+            when (askApproval(call, risk, SOURCE_MCP)) {
                 Decision.ONCE -> true
                 Decision.ALWAYS -> {
                     approvals.allowAlways(call.tool, risk)
@@ -1278,6 +1380,7 @@ class RelayController(
     // endregion
 
     fun destroy() {
+        pendingApprovals.values.forEach { it.decision.complete(Decision.DENY) }
         runJob?.cancel()
         appJob?.cancel()
         mcp?.stop()
@@ -1289,6 +1392,12 @@ class RelayController(
 
     companion object {
         private const val TAG = "Relay"
+        private const val SOURCE_CHAT = "chat"
+        private const val SOURCE_MCP = "mcp"
+        private const val BUSY_TEXT = "Агент работает — дождитесь ответа или нажмите «Стоп»"
+        private const val MCP_APPROVAL_TIMEOUT_MS = 5 * 60_000L
+        private const val PREAMBLE_CARRY_MS = 30_000L
+        private val CHAT_POLL_MS = longArrayOf(900, 2500, 6000, 10_000)
         private val PICK_HINTS = mapOf(
             "input" to "🎯 Нажмите на поле ввода сообщения",
             "send" to "🎯 Нажмите на кнопку «Отправить»",

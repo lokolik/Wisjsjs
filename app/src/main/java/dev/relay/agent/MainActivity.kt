@@ -17,6 +17,7 @@ import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.view.WindowInsets
 import android.view.inputmethod.InputMethodManager
 import android.webkit.JavascriptInterface
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -57,13 +58,20 @@ class MainActivity : Activity() {
         with(ui.settings) {
             javaScriptEnabled = true
             domStorageEnabled = true
-            allowFileAccess = true
+            // file:///android_asset stays readable without general file access.
+            allowFileAccess = false
         }
         ui.addJavascriptInterface(UiBridge(), "RelayHost")
         ui.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 if (request.url.scheme == "file") return false
                 runCatching { startActivity(Intent(Intent.ACTION_VIEW, request.url).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                return true
+            }
+
+            override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                // Returning false would kill the app; rebuilding the activity brings the UI back.
+                recreate()
                 return true
             }
         }

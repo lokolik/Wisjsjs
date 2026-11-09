@@ -7,11 +7,18 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+<<<<<<< HEAD
 import android.util.Base64
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.URLUtil
 import android.webkit.ValueCallback
+=======
+import android.view.ViewGroup
+import android.webkit.CookieManager
+import android.webkit.JavascriptInterface
+import android.webkit.RenderProcessGoneDetail
+>>>>>>> 4cec581 (Fix cut-off chat list and thread scrolling, harden agent/MCP/site lifecycle)
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
@@ -68,6 +75,10 @@ class SiteSession(
     private val prompts = ConcurrentHashMap<String, String>()
     private val main = Handler(Looper.getMainLooper())
     private val defaultUa: String
+
+    /** Set once the renderer died; the WebView must not be used after that. */
+    @Volatile
+    private var crashed = false
 
     var currentUrl: String = adapter.optString("url")
         private set
@@ -130,6 +141,7 @@ class SiteSession(
     }
 
     suspend fun eval(js: String): String = withContext(Dispatchers.Main) {
+        if (crashed) return@withContext "null"
         suspendCancellableCoroutine { cont ->
             webView.evaluateJavascript(js) { if (cont.isActive) cont.resume(it ?: "null") }
         }
@@ -238,7 +250,8 @@ class SiteSession(
 
     fun destroy() {
         pending.values.forEach { it.cancel() }
-        webView.stopLoading()
+        (webView.parent as? ViewGroup)?.removeView(webView)
+        if (!crashed) webView.stopLoading()
         webView.destroy()
     }
 
@@ -292,6 +305,15 @@ class SiteSession(
                 currentUrl = url
                 onEvent(this@SiteSession, JSONObject().put("type", "urlChanged").put("url", url))
             }
+        }
+
+        override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+            // Returning false lets Android kill the whole app; the controller rebuilds this site instead.
+            crashed = true
+            val error = IllegalStateException("Страница сайта аварийно закрылась — отправьте сообщение ещё раз")
+            pending.values.forEach { it.completeExceptionally(error) }
+            main.post { onEvent(this@SiteSession, JSONObject().put("type", "crashed")) }
+            return true
         }
     }
 

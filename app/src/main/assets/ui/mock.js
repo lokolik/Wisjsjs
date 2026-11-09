@@ -3,7 +3,8 @@
  * so the UI can be previewed and screenshot-tested in a desktop browser. Never used inside the app.
  */
 (function () {
-  if (window.RelayHost) return;
+  // Inside the app the UI is a file:// page; never fake the host there, even if the bridge is missing.
+  if (window.RelayHost || !/^https?:$/.test(location.protocol)) return;
 
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   const emit = (m) => setTimeout(() => window.relayUI && window.relayUI.receive(JSON.parse(JSON.stringify(m))), 0);

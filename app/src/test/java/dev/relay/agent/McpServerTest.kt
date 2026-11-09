@@ -30,13 +30,13 @@ class McpServerTest {
     @After
     fun stop() = server.stop()
 
-    private fun post(body: String, token: String? = "secret"): Pair<Int, String> {
+    private fun post(body: String, token: String? = "secret", scheme: String = "Bearer"): Pair<Int, String> {
         val conn = URL("http://127.0.0.1:${server.boundPort}/mcp").openConnection() as HttpURLConnection
         conn.requestMethod = "POST"
         conn.doOutput = true
         conn.setRequestProperty("Content-Type", "application/json")
         conn.setRequestProperty("Accept", "application/json, text/event-stream")
-        if (token != null) conn.setRequestProperty("Authorization", "Bearer $token")
+        if (token != null) conn.setRequestProperty("Authorization", "$scheme $token")
         conn.outputStream.use { it.write(body.toByteArray()) }
         val code = conn.responseCode
         val text = (if (code < 400) conn.inputStream else conn.errorStream)?.bufferedReader()?.readText() ?: ""
@@ -86,5 +86,22 @@ class McpServerTest {
     @Test
     fun handlerIgnoresNotifications() {
         assertNull(McpHandler({ ToolResult(true, "") }).handle(JSONObject("""{"jsonrpc":"2.0","method":"notifications/cancelled"}""")))
+    }
+
+    @Test
+    fun bearerSchemeIsCaseInsensitive() {
+        assertEquals(200, post("""{"jsonrpc":"2.0","id":1,"method":"ping"}""", scheme = "bearer").first)
+        assertEquals(200, post("""{"jsonrpc":"2.0","id":1,"method":"ping"}""", scheme = "BEARER").first)
+    }
+
+    @Test
+    fun repeatedRpcIdsGetDistinctCallIds() {
+        // Two clients (or two sessions of one client) both start counting at id 1.
+        val body = """{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"mkdir","arguments":{"path":"~/a"}}}"""
+        post(body)
+        post(body)
+        assertEquals(2, calls.size)
+        assertTrue(calls[0].id != calls[1].id)
+        assertTrue(calls.all { it.id.startsWith("mcp-") })
     }
 }
