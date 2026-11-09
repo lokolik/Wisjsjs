@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0a0b10">
+<title>Relay</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="bg-glow" aria-hidden="true"></div>
+<div class="app" id="app">
+  <aside class="sidebar" id="sidebar" aria-label="Подключение и чаты">
+    <div class="brand">
+      <div class="logo" id="brandLogo"></div>
+      <div class="brand-text">
+        <div class="brand-name">Relay</div>
+        <div class="brand-sub">Claude Code для любых ИИ</div>
+      </div>
+    </div>
+    <button class="conn" id="connBtn" type="button"></button>
+    <div class="side-actions">
+      <button class="btn primary grow" id="newChatBtn" type="button"></button>
+      <button class="icon-btn boxed" id="refreshBtn" type="button" title="Обновить список" aria-label="Обновить список"></button>
+    </div>
+    <label class="search" id="searchBox">
+      <span class="search-ic"></span>
+      <input id="chatSearch" type="search" placeholder="Поиск чатов и проектов" autocomplete="off">
+    </label>
+    <nav class="chat-list" id="chatList"></nav>
+    <div class="side-foot">
+      <button class="foot-btn" id="settingsBtn" type="button"></button>
+      <div class="badges" id="badges"></div>
+    </div>
+  </aside>
+  <div class="scrim" id="scrim"></div>
+  <main class="main">
+    <header class="topbar">
+      <button class="icon-btn only-mobile" id="menuBtn" type="button" aria-label="Меню"></button>
+      <button class="title" id="titleBtn" type="button">
+        <span class="avatar" id="topAvatar"></span>
+        <span class="title-text">
+          <span class="t1" id="topTitle">Relay</span>
+          <span class="t2" id="topSub"></span>
+        </span>
+      </button>
+      <button class="icon-btn boxed" id="siteBtn" type="button" title="Открыть сайт" aria-label="Открыть сайт"></button>
+    </header>
+    <div class="banner" id="banner" hidden></div>
+    <section class="thread" id="thread" aria-live="polite">
+      <div class="thread-inner" id="threadInner"></div>
+    </section>
+    <footer class="composer">
+      <div class="composer-box" id="composerBox">
+        <textarea id="input" rows="1" placeholder="Опишите задачу…" enterkeyhint="enter"></textarea>
+        <div class="composer-row">
+          <button class="mode-chip" id="agentChip" type="button"></button>
+          <span class="composer-hint" id="composerHint"></span>
+          <button class="send-btn" id="sendBtn" type="button" aria-label="Отправить"></button>
+        </div>
+      </div>
+    </footer>
+  </main>
+</div>
+<div class="sheet-layer" id="sheetLayer" hidden></div>
+<div class="toasts" id="toasts"></div>
+<script src="mock.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

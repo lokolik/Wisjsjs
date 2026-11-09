@@ -1,0 +1,254 @@
+{
+  "version": 1,
+  "about": "Built-in presets. Selectors are best effort: sites change their markup, so every preset can be re-tuned in the app (Edit → tap elements on the site). Empty selectors fall back to automatic detection.",
+  "adapters": [
+    {
+      "id": "chatgpt",
+      "name": "ChatGPT",
+      "kind": "web",
+      "group": "ai",
+      "domain": "chatgpt.com",
+      "url": "https://chatgpt.com/",
+      "newChatUrl": "https://chatgpt.com/",
+      "color": "#10A37F",
+      "icon": "GPT",
+      "desktop": false,
+      "submit": "auto",
+      "selectors": {
+        "input": "#prompt-textarea",
+        "send": "button[data-testid=\"send-button\"], #composer-submit-button",
+        "response": "[data-message-author-role=\"assistant\"]",
+        "busy": "button[data-testid=\"stop-button\"]",
+        "chatLink": "a[href^=\"/c/\"]",
+        "projectLink": "a[href^=\"/g/g-p-\"]"
+      }
+    },
+    {
+      "id": "claude",
+      "name": "Claude",
+      "kind": "web",
+      "group": "ai",
+      "domain": "claude.ai",
+      "url": "https://claude.ai/new",
+      "newChatUrl": "https://claude.ai/new",
+      "color": "#D97757",
+      "icon": "C",
+      "desktop": false,
+      "submit": "auto",
+      "selectors": {
+        "input": "div.ProseMirror[contenteditable=\"true\"]",
+        "send": "button[aria-label=\"Send message\"], button[aria-label=\"Send Message\"]",
+        "response": "div[data-is-streaming]",
+        "busy": "div[data-is-streaming=\"true\"], button[aria-label=\"Stop response\"]",
+        "chatLink": "a[href^=\"/chat/\"]",
+        "projectLink": "a[href^=\"/project/\"]"
+      }
+    },
+    {
+      "id": "notion",
+      "name": "Notion AI",
+      "kind": "web",
+      "group": "ai",
+      "domain": "notion.so",
+      "url": "https://www.notion.so/ai",
+      "newChatUrl": "https://www.notion.so/ai",
+      "color": "#FFFFFF",
+      "icon": "N",
+      "desktop": true,
+      "submit": "auto",
+      "note": "Без API-ключа: входите в свой аккаунт Notion прямо в Relay. Если поле ввода не находится — нажмите «Настроить» и тапните его.",
+      "selectors": {}
+    },
+    {
+      "id": "hark",
+      "name": "Hark Pro",
+      "kind": "web",
+      "group": "ai",
+      "domain": "hark.com",
+      "url": "https://hark.com/",
+      "newChatUrl": "https://hark.com/",
+      "color": "#F5C542",
+      "icon": "H",
+      "desktop": false,
+      "submit": "auto",
+      "singleThread": true,
+      "singleThreadTitle": "Основной тред Hark",
+      "note": "У Hark Pro один общий тред + «Проекты». Relay пишет в основной тред; проекты появятся в списке, если их удастся найти на странице (или укажите селектор проекта).",
+      "selectors": {}
+    },
+    {
+      "id": "gemini",
+      "name": "Gemini",
+      "kind": "web",
+      "group": "ai",
+      "domain": "gemini.google.com",
+      "url": "https://gemini.google.com/app",
+      "newChatUrl": "https://gemini.google.com/app",
+      "color": "#4C8DF6",
+      "icon": "G",
+      "desktop": false,
+      "submit": "auto",
+      "note": "Google может не пускать вход внутри встроенного браузера. Если вход блокируется — используйте приложение Gemini через раздел «Приложения».",
+      "selectors": {
+        "input": "rich-textarea .ql-editor, div.ql-editor[contenteditable=\"true\"]",
+        "send": "button.send-button, button[aria-label*=\"Send\"]",
+        "response": "model-response",
+        "busy": "button[aria-label*=\"Stop\"]",
+        "chatLink": "a[href^=\"/app/\"]"
+      }
+    },
+    {
+      "id": "perplexity",
+      "name": "Perplexity",
+      "kind": "web",
+      "group": "ai",
+      "domain": "perplexity.ai",
+      "url": "https://www.perplexity.ai/",
+      "newChatUrl": "https://www.perplexity.ai/",
+      "color": "#20B8CD",
+      "icon": "P",
+      "desktop": false,
+      "submit": "auto",
+      "selectors": {
+        "input": "#ask-input, textarea",
+        "send": "button[aria-label=\"Submit\"], button[data-testid=\"submit-button\"]",
+        "response": "div.prose",
+        "busy": "button[aria-label*=\"Stop\"]",
+        "chatLink": "a[href^=\"/search/\"]",
+        "projectLink": "a[href^=\"/spaces/\"]"
+      }
+    },
+    {
+      "id": "deepseek",
+      "name": "DeepSeek",
+      "kind": "web",
+      "group": "ai",
+      "domain": "chat.deepseek.com",
+      "url": "https://chat.deepseek.com/",
+      "newChatUrl": "https://chat.deepseek.com/",
+      "color": "#4D6BFE",
+      "icon": "DS",
+      "desktop": false,
+      "submit": "auto",
+      "selectors": {
+        "input": "textarea#chat-input, textarea",
+        "response": ".ds-markdown",
+        "chatLink": "a[href^=\"/a/chat/s/\"]"
+      }
+    },
+    {
+      "id": "grok",
+      "name": "Grok",
+      "kind": "web",
+      "group": "ai",
+      "domain": "grok.com",
+      "url": "https://grok.com/",
+      "newChatUrl": "https://grok.com/",
+      "color": "#E5E7EB",
+      "icon": "X",
+      "desktop": false,
+      "submit": "auto",
+      "selectors": {
+        "send": "button[type=\"submit\"]",
+        "chatLink": "a[href^=\"/chat/\"]"
+      }
+    },
+    {
+      "id": "mistral",
+      "name": "Le Chat",
+      "kind": "web",
+      "group": "ai",
+      "domain": "chat.mistral.ai",
+      "url": "https://chat.mistral.ai/chat",
+      "newChatUrl": "https://chat.mistral.ai/chat",
+      "color": "#FA520F",
+      "icon": "M",
+      "desktop": false,
+      "submit": "auto",
+      "selectors": {
+        "chatLink": "a[href^=\"/chat/\"]"
+      }
+    },
+    {
+      "id": "copilot",
+      "name": "Copilot",
+      "kind": "web",
+      "group": "ai",
+      "domain": "copilot.microsoft.com",
+      "url": "https://copilot.microsoft.com/",
+      "newChatUrl": "https://copilot.microsoft.com/",
+      "color": "#2C8CF4",
+      "icon": "Co",
+      "desktop": false,
+      "submit": "auto",
+      "selectors": {
+        "input": "textarea#userInput, textarea",
+        "response": "[data-content=\"ai-message\"]",
+        "chatLink": "a[href^=\"/chats/\"]"
+      }
+    },
+    {
+      "id": "qwen",
+      "name": "Qwen",
+      "kind": "web",
+      "group": "ai",
+      "domain": "chat.qwen.ai",
+      "url": "https://chat.qwen.ai/",
+      "newChatUrl": "https://chat.qwen.ai/",
+      "color": "#615CED",
+      "icon": "Q",
+      "desktop": false,
+      "submit": "auto",
+      "selectors": {
+        "input": "textarea#chat-input, textarea",
+        "chatLink": "a[href^=\"/c/\"]"
+      }
+    },
+    {
+      "id": "app-hark",
+      "name": "Hark Pro",
+      "kind": "app",
+      "group": "apps",
+      "package": "com.hark.android",
+      "color": "#F5C542",
+      "icon": "H",
+      "note": "Управление приложением через спец. возможности: Relay вставляет текст, нажимает «Отправить» и читает ответ с экрана."
+    },
+    {
+      "id": "app-chatgpt",
+      "name": "ChatGPT",
+      "kind": "app",
+      "group": "apps",
+      "package": "com.openai.chatgpt",
+      "color": "#10A37F",
+      "icon": "GPT"
+    },
+    {
+      "id": "app-claude",
+      "name": "Claude",
+      "kind": "app",
+      "group": "apps",
+      "package": "com.anthropic.claude",
+      "color": "#D97757",
+      "icon": "C"
+    },
+    {
+      "id": "app-gemini",
+      "name": "Gemini",
+      "kind": "app",
+      "group": "apps",
+      "package": "com.google.android.apps.bard",
+      "color": "#4C8DF6",
+      "icon": "G"
+    },
+    {
+      "id": "app-notion",
+      "name": "Notion",
+      "kind": "app",
+      "group": "apps",
+      "package": "notion.id",
+      "color": "#FFFFFF",
+      "icon": "N"
+    }
+  ]
+}

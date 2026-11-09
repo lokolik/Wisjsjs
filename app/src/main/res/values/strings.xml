@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Relay</string>
+    <string name="a11y_label">Relay — управление ИИ-приложениями</string>
+    <string name="a11y_description">Позволяет Relay вставлять ваш запрос в выбранное приложение с ИИ (например, Hark Pro), нажимать «Отправить» и читать ответ. Служба действует только когда вы отправляете задачу из Relay.</string>
+    <color name="bg">#FF0A0B10</color>
+</resources>

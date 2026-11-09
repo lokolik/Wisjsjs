@@ -1,0 +1,12 @@
+{
+  "name": "relay-web-test",
+  "private": true,
+  "type": "module",
+  "description": "Headless-Chromium checks for relay-core.js and the Relay UI (with the mock host).",
+  "scripts": {
+    "test": "node run.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.49.1"
+  }
+}

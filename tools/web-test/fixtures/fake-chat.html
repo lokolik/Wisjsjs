@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fake AI chat (fixture)</title>
+<style>
+  body { font: 15px system-ui, sans-serif; margin: 0; display: flex; height: 100vh; }
+  nav { width: 200px; background: #f3f3f3; padding: 8px; display: flex; flex-direction: column; gap: 4px; }
+  nav input { margin-bottom: 8px; }
+  main { flex: 1; display: flex; flex-direction: column; }
+  #msgs { flex: 1; overflow: auto; padding: 12px; }
+  .user { background: #eef; margin: 6px 0; padding: 6px; white-space: pre-wrap; }
+  .assistant { background: #efe; margin: 6px 0; padding: 6px; }
+  #composer { display: flex; gap: 6px; padding: 8px; border-top: 1px solid #ddd; }
+  #editor, #ta { flex: 1; min-height: 40px; border: 1px solid #ccc; padding: 6px; }
+  pre { background: #222; color: #eee; padding: 6px; }
+  .hdr { font-size: 11px; color: #aaa; }
+</style>
+</head>
+<body>
+<nav aria-label="История">
+  <input type="search" placeholder="Search chats">
+  <a href="/c/aaaa1111-2222-3333">Планы на неделю</a>
+  <a href="/c/bbbb4444-5555-6666">Скрипт для бэкапа</a>
+  <a href="/project/proj-777-alpha">Проект «Работа»</a>
+  <a href="/settings">Настройки</a>
+</nav>
+<main>
+  <div id="msgs">
+    <div class="user">Привет</div>
+    <div class="assistant" data-role="assistant"><p>Здравствуйте! Чем помочь?</p></div>
+  </div>
+  <form id="composer"></form>
+</main>
+<script>
+  // Simulates a modern chat site. ?mode=textarea → plain textarea + Enter to send, no send button, no data attributes.
+  var mode = new URLSearchParams(location.search).get('mode') || 'rich';
+  var composer = document.getElementById('composer');
+  var input, sendBtn, stopBtn;
+  if (mode === 'textarea') {
+    composer.innerHTML = '<textarea id="ta" placeholder="Спросите что-нибудь"></textarea>';
+    input = document.getElementById('ta');
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitPrompt(input.value); input.value = ''; }
+    });
+    document.querySelectorAll('.assistant').forEach(function (a) { a.removeAttribute('data-role'); });
+  } else {
+    composer.innerHTML = '<div id="editor" class="ProseMirror" contenteditable="true" data-placeholder="Message"></div>' +
+      '<button type="button" aria-label="Voice mode">🎤</button>' +
+      '<button type="submit" data-testid="send-button" aria-label="Send prompt" disabled>↑</button>';
+    input = document.getElementById('editor');
+    sendBtn = composer.querySelector('[data-testid="send-button"]');
+    input.addEventListener('input', function () { sendBtn.disabled = !input.innerText.trim(); });
+    composer.addEventListener('submit', function (e) {
+      e.preventDefault();
+      var t = input.innerText;
+      input.innerHTML = '';
+      sendBtn.disabled = true;
+      submitPrompt(t);
+    });
+  }
+
+  window.__sent = [];
+  function submitPrompt(text) {
+    if (!text.trim()) return;
+    window.__sent.push(text);
+    var msgs = document.getElementById('msgs');
+    var u = document.createElement('div');
+    u.className = 'user';
+    u.textContent = text;
+    msgs.appendChild(u);
+    var a = document.createElement('div');
+    a.className = 'assistant';
+    if (mode !== 'textarea') a.setAttribute('data-role', 'assistant');
+    msgs.appendChild(a);
+    if (sendBtn) {
+      stopBtn = document.createElement('button');
+      stopBtn.type = 'button';
+      stopBtn.setAttribute('aria-label', 'Stop streaming');
+      stopBtn.textContent = '■';
+      composer.appendChild(stopBtn);
+    }
+    var wantsTool = /папк/i.test(text);
+    var words = (wantsTool ? 'Сейчас создам папку на вашем устройстве.' : 'Готово, задача выполнена без инструментов.').split(' ');
+    var p = document.createElement('p');
+    a.appendChild(p);
+    var i = 0;
+    var timer = setInterval(function () {
+      if (i < words.length) { p.textContent += (i ? ' ' : '') + words[i++]; return; }
+      clearInterval(timer);
+      if (wantsTool) {
+        var pre = document.createElement('pre');
+        pre.innerHTML = '<div class="hdr">relay <button type="button">Copy code</button></div><code></code>';
+        pre.querySelector('code').textContent = '{"tool": "mkdir", "args": {"path": "~/Download/привет"}}';
+        a.appendChild(pre);
+      }
+      if (stopBtn) { stopBtn.remove(); stopBtn = null; }
+    }, 120);
+  }
+</script>
+</body>
+</html>
