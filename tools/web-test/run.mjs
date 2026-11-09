@@ -421,7 +421,6 @@ const lastGap = (page) => page.evaluate(() => {
   const items = document.querySelectorAll('#threadInner > *');
   return Math.round(items[items.length - 1].getBoundingClientRect().bottom - t.bottom);
 });
-const connected = (page) => page.waitForFunction(() => document.querySelector('#topSub').textContent.includes('подключено'));
 
 await test('ui: phone — newest message stays in view when the keyboard opens', async () => {
   const { page, ctx, errors } = await uiPage({ width: 390, height: 780 }, '', true, history(40));
