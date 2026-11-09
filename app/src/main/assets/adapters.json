@@ -1,7 +1,130 @@
 {
-  "version": 1,
-  "about": "Built-in presets. Selectors are best effort: sites change their markup, so every preset can be re-tuned in the app (Edit → tap elements on the site). Empty selectors fall back to automatic detection.",
+  "version": 2,
+  "about": "Built-in presets. Apps are driven through Android accessibility and tuned by auto-setup on the device; site selectors are best effort and can be re-tuned in the app (Edit → tap elements). Empty selectors fall back to automatic detection.",
   "adapters": [
+    {
+      "id": "app-chatgpt",
+      "name": "ChatGPT",
+      "kind": "app",
+      "group": "apps",
+      "packages": ["com.openai.chatgpt"],
+      "share": "auto",
+      "color": "#10A37F",
+      "icon": "GPT"
+    },
+    {
+      "id": "app-claude",
+      "name": "Claude",
+      "kind": "app",
+      "group": "apps",
+      "packages": ["com.anthropic.claude"],
+      "share": "auto",
+      "color": "#D97757",
+      "icon": "C"
+    },
+    {
+      "id": "app-hark",
+      "name": "Hark Pro",
+      "kind": "app",
+      "group": "apps",
+      "packages": ["com.hark.android"],
+      "share": "auto",
+      "color": "#F5C542",
+      "icon": "H",
+      "note": "У Hark Pro один общий тред и «Проекты». Relay пишет в открытый тред; проекты появятся в списке после автонастройки."
+    },
+    {
+      "id": "app-notion",
+      "name": "Notion AI",
+      "kind": "app",
+      "group": "apps",
+      "packages": ["notion.id"],
+      "share": "off",
+      "entry": "^(notion )?ai$|ask ai|спросить ии|^ии$",
+      "color": "#FFFFFF",
+      "icon": "N",
+      "note": "«Поделиться» в Notion сохраняет страницу, а не отправляет файл в ИИ, поэтому текстовые файлы Relay вставляет прямо в сообщение."
+    },
+    {
+      "id": "app-gemini",
+      "name": "Gemini",
+      "kind": "app",
+      "group": "apps",
+      "packages": ["com.google.android.apps.bard"],
+      "share": "auto",
+      "color": "#4C8DF6",
+      "icon": "G"
+    },
+    {
+      "id": "app-perplexity",
+      "name": "Perplexity",
+      "kind": "app",
+      "group": "apps",
+      "packages": ["ai.perplexity.app.android"],
+      "share": "auto",
+      "color": "#20B8CD",
+      "icon": "P"
+    },
+    {
+      "id": "app-deepseek",
+      "name": "DeepSeek",
+      "kind": "app",
+      "group": "apps",
+      "packages": ["com.deepseek.chat"],
+      "share": "auto",
+      "color": "#4D6BFE",
+      "icon": "DS"
+    },
+    {
+      "id": "app-grok",
+      "name": "Grok",
+      "kind": "app",
+      "group": "apps",
+      "packages": ["ai.x.grok"],
+      "share": "auto",
+      "color": "#E5E7EB",
+      "icon": "X"
+    },
+    {
+      "id": "app-copilot",
+      "name": "Copilot",
+      "kind": "app",
+      "group": "apps",
+      "packages": ["com.microsoft.copilot"],
+      "share": "auto",
+      "color": "#2C8CF4",
+      "icon": "Co"
+    },
+    {
+      "id": "app-lechat",
+      "name": "Le Chat",
+      "kind": "app",
+      "group": "apps",
+      "packages": ["ai.mistral.chat"],
+      "share": "auto",
+      "color": "#FA520F",
+      "icon": "M"
+    },
+    {
+      "id": "app-gigachat",
+      "name": "ГигаЧат",
+      "kind": "app",
+      "group": "apps",
+      "packages": ["com.sdkit.search.app"],
+      "share": "auto",
+      "color": "#21A038",
+      "icon": "Г"
+    },
+    {
+      "id": "app-alice",
+      "name": "Алиса AI",
+      "kind": "app",
+      "group": "apps",
+      "packages": ["com.yandex.aliceapp"],
+      "share": "auto",
+      "color": "#8A5CF6",
+      "icon": "А"
+    },
     {
       "id": "chatgpt",
       "name": "ChatGPT",
@@ -88,7 +211,7 @@
       "icon": "G",
       "desktop": false,
       "submit": "auto",
-      "note": "Google может не пускать вход внутри встроенного браузера. Если вход блокируется — используйте приложение Gemini через раздел «Приложения».",
+      "note": "Google может не пускать вход внутри встроенного браузера. Если вход блокируется — используйте приложение Gemini.",
       "selectors": {
         "input": "rich-textarea .ql-editor, div.ql-editor[contenteditable=\"true\"]",
         "send": "button.send-button, button[aria-label*=\"Send\"]",
@@ -203,52 +326,6 @@
         "input": "textarea#chat-input, textarea",
         "chatLink": "a[href^=\"/c/\"]"
       }
-    },
-    {
-      "id": "app-hark",
-      "name": "Hark Pro",
-      "kind": "app",
-      "group": "apps",
-      "package": "com.hark.android",
-      "color": "#F5C542",
-      "icon": "H",
-      "note": "Управление приложением через спец. возможности: Relay вставляет текст, нажимает «Отправить» и читает ответ с экрана."
-    },
-    {
-      "id": "app-chatgpt",
-      "name": "ChatGPT",
-      "kind": "app",
-      "group": "apps",
-      "package": "com.openai.chatgpt",
-      "color": "#10A37F",
-      "icon": "GPT"
-    },
-    {
-      "id": "app-claude",
-      "name": "Claude",
-      "kind": "app",
-      "group": "apps",
-      "package": "com.anthropic.claude",
-      "color": "#D97757",
-      "icon": "C"
-    },
-    {
-      "id": "app-gemini",
-      "name": "Gemini",
-      "kind": "app",
-      "group": "apps",
-      "package": "com.google.android.apps.bard",
-      "color": "#4C8DF6",
-      "icon": "G"
-    },
-    {
-      "id": "app-notion",
-      "name": "Notion",
-      "kind": "app",
-      "group": "apps",
-      "package": "notion.id",
-      "color": "#FFFFFF",
-      "icon": "N"
     }
   ]
 }

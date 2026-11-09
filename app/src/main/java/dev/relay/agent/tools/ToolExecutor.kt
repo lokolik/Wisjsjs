@@ -4,6 +4,9 @@ import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLDecoder
 import java.util.Base64
 import java.util.Locale
 
@@ -33,6 +36,10 @@ interface Platform {
     fun openUrl(url: String): String
     fun launchApp(nameOrPackage: String): String
     fun deviceInfo(): Map<String, Any?>
+    fun openFile(file: File): String
+    /** Queues a device file for the next message to the AI chat. */
+    fun attachFile(file: File): String
+    fun onFileCreated(file: File, source: String) {}
 }
 
 class ToolExecutor(
@@ -42,9 +49,15 @@ class ToolExecutor(
 ) {
     private class ArgError(message: String) : Exception(message)
 
+    /** Paths written by tools, so the new-file watcher does not report them twice. */
+    val touched: MutableSet<String> = java.util.Collections.synchronizedSet(HashSet())
+
     fun execute(call: ToolCall): ToolResult = try {
         val a = call.args
         when (call.tool) {
+            "download_file" -> download(str(a, listOf("url", "link", "href")), a.optString("path").takeIf { it.isNotBlank() })
+            "open_file" -> openFile(resolve(str(a, PATH_KEYS)))
+            "attach_file" -> attach(resolve(str(a, PATH_KEYS)))
             "list_dir" -> listDir(resolve(str(a, PATH_KEYS, default = "~")))
             "read_file" -> readFile(resolve(str(a, PATH_KEYS)), a.optInt("max_chars", 20_000).coerceIn(100, 200_000))
             "search_files" -> searchFiles(resolve(str(a, PATH_KEYS, default = "~")), str(a, listOf("pattern", "name", "query")))
@@ -140,6 +153,7 @@ class ToolExecutor(
 
     private fun writeFile(f: File, content: String, append: Boolean): ToolResult {
         val bytes = content.toByteArray(Charsets.UTF_8)
+        touched += f.path
         return try {
             f.parentFile?.mkdirs()
             FileOutputStream(f, append).use { it.write(bytes) }
@@ -168,6 +182,7 @@ class ToolExecutor(
         }
         val dest = if (to.isDirectory) File(to, from.name) else to
         if (dest.exists()) return fail("Назначение уже существует: ${dest.path}")
+        touched += dest.path
         dest.parentFile?.mkdirs()
         if (from.renameTo(dest)) return ok("Перемещено: ${from.path} → ${dest.path}")
         try {
@@ -185,6 +200,7 @@ class ToolExecutor(
                 ?: fail("Не найдено: ${from.path}")
         }
         val dest = if (to.isDirectory) File(to, from.name) else to
+        touched += dest.path
         return try {
             dest.parentFile?.mkdirs()
             if (from.isDirectory) from.copyRecursively(dest, overwrite = true) else from.copyTo(dest, overwrite = true)
@@ -208,6 +224,81 @@ class ToolExecutor(
         if (deleted) return ok("Удалено: ${f.path}")
         return viaRoot("rm ${if (f.isDirectory) "-rf" else "-f"} -- ${q(f.path)}") { "Удалено (root): ${f.path}" }
             ?: fail("Не удалось удалить ${f.path}. $ACCESS_HINT")
+    }
+
+    private fun download(url: String, dest: String?): ToolResult {
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            return fail("Скачивать можно только http(s)-ссылки. Если файл есть только в приложении ИИ — Relay скачает его кнопкой «Скачать» в ответе.")
+        }
+        var u = URL(url)
+        var conn: HttpURLConnection? = null
+        for (hop in 0 until 6) {
+            val c = u.openConnection() as HttpURLConnection
+            c.instanceFollowRedirects = false
+            c.connectTimeout = 20_000
+            c.readTimeout = 60_000
+            c.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android) Relay/0.2")
+            val code = c.responseCode
+            if (code in 300..399) {
+                val loc = c.getHeaderField("Location") ?: return fail("Перенаправление без адреса ($code)")
+                c.disconnect()
+                u = URL(u, loc)
+                continue
+            }
+            if (code !in 200..299) {
+                c.disconnect()
+                return fail("Сервер ответил $code для $u")
+            }
+            conn = c
+            break
+        }
+        val c = conn ?: return fail("Слишком много перенаправлений")
+        try {
+            var name = fileNameFrom(c.getHeaderField("Content-Disposition")) ?: URLDecoder.decode(u.path.substringAfterLast('/'), "UTF-8")
+            name = name.replace(Regex("""[\\/:*?"<>|\u0000-\u001f]"""), "_").trim().trim('.').take(120).ifBlank { "download" }
+            if (!name.contains('.')) dev.relay.agent.agent.Mime.ext(c.contentType)?.let { name += ".$it" }
+            val target = when {
+                dest == null -> resolve("~/Download")
+                dest.endsWith("/") -> resolve(dest)
+                else -> resolve(dest)
+            }
+            val file = if (dest == null || dest.endsWith("/") || target.isDirectory) unique(target, name) else target
+            file.parentFile?.mkdirs()
+            touched += file.path
+            var total = 0L
+            c.inputStream.use { input ->
+                FileOutputStream(file).use { out ->
+                    val buf = ByteArray(64 * 1024)
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        total += n
+                        if (total > MAX_DOWNLOAD) {
+                            out.close()
+                            file.delete()
+                            return fail("Файл больше ${human(MAX_DOWNLOAD)} — скачивание прервано")
+                        }
+                        out.write(buf, 0, n)
+                    }
+                }
+            }
+            platform.onFileCreated(file, "download")
+            return ok("Скачано: ${file.path} (${human(total)})")
+        } finally {
+            c.disconnect()
+        }
+    }
+
+    private fun openFile(f: File): ToolResult {
+        if (!f.isFile) return fail("Файл не найден: ${f.path}")
+        return ok(platform.openFile(f))
+    }
+
+    private fun attach(f: File): ToolResult {
+        if (!f.isFile) return fail(if (f.isDirectory) "Это папка, прикрепить можно только файл: ${f.path}" else "Файл не найден: ${f.path}")
+        if (!f.canRead()) return fail("Нет доступа к ${f.path}. $ACCESS_HINT")
+        if (f.length() > MAX_ATTACH) return fail("Файл слишком большой (${human(f.length())}), максимум ${human(MAX_ATTACH)}")
+        return ok(platform.attachFile(f))
     }
 
     private fun runShell(command: String, root: Boolean, timeoutSec: Long): ToolResult {
@@ -260,6 +351,27 @@ class ToolExecutor(
     companion object {
         private const val MAX_LIST = 300
         private const val MAX_SEARCH = 200
+        private const val MAX_DOWNLOAD = 1024L * 1024 * 1024
+        const val MAX_ATTACH = 100L * 1024 * 1024
+
+        fun unique(dir: File, name: String): File {
+            var f = File(dir, name)
+            if (!f.exists()) return f
+            val base = name.substringBeforeLast('.', name)
+            val ext = name.substringAfterLast('.', "").let { if (it.isEmpty() || it == name) "" else ".$it" }
+            var i = 1
+            while (f.exists()) f = File(dir, "$base (${i++})$ext")
+            return f
+        }
+
+        fun fileNameFrom(disposition: String?): String? {
+            if (disposition.isNullOrBlank()) return null
+            Regex("""filename\*\s*=\s*(?:UTF-8|utf-8)''([^;]+)""").find(disposition)?.let {
+                return URLDecoder.decode(it.groupValues[1].trim('"', ' '), "UTF-8")
+            }
+            Regex("""filename\s*=\s*"?([^";]+)"?""").find(disposition)?.let { return it.groupValues[1].trim() }
+            return null
+        }
         private const val ACCESS_HINT = "Выдай Relay «Доступ ко всем файлам» (Настройки → Разрешения) или разреши root."
 
         private val PATH_KEYS = listOf("path", "dir", "folder", "directory", "file")
@@ -315,6 +427,16 @@ class ToolExecutor(
                 listOf(ToolParam("command", "string", "команда"), ToolParam("root", "boolean", "выполнить через su", required = false)),
                 Risk.DANGER,
             ),
+            ToolSpec(
+                "download_file", "скачать файл по http(s)-ссылке (по умолчанию в ~/Download)",
+                listOf(ToolParam("url", "string", "ссылка на файл"), ToolParam("path", "string", "папка или путь назначения", required = false)),
+                Risk.WRITE,
+            ),
+            ToolSpec(
+                "attach_file", "прикрепить файл с устройства к следующему сообщению в этот чат (чтобы ты его увидел)",
+                listOf(ToolParam("path", "string", "путь к файлу")), Risk.WRITE,
+            ),
+            ToolSpec("open_file", "открыть файл в подходящем приложении на устройстве", listOf(ToolParam("path", "string", "путь к файлу")), Risk.WRITE),
             ToolSpec("open_url", "открыть ссылку в браузере", listOf(ToolParam("url", "string", "адрес")), Risk.WRITE),
             ToolSpec("launch_app", "запустить приложение", listOf(ToolParam("package", "string", "имя пакета или название приложения")), Risk.WRITE),
             ToolSpec("device_info", "сведения об устройстве, памяти и root", emptyList(), Risk.READ),

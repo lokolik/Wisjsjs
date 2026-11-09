@@ -14,7 +14,7 @@ data class TargetReply(
 
 /** A chat on a website or inside an installed app that can receive a prompt and return the AI reply. */
 interface ChatTarget {
-    suspend fun send(text: String, onPartial: (String) -> Unit): TargetReply
+    suspend fun send(text: String, attachments: List<Attachment>, onPartial: (String) -> Unit): TargetReply
 }
 
 enum class Decision { ONCE, ALWAYS, DENY }
@@ -55,6 +55,10 @@ class AgentLoop(
     private val approvals: ApprovalPolicy,
     private val maxSteps: Int = 12,
     private val runId: String = System.currentTimeMillis().toString(36),
+    /** Files to send with the next message (user attachments, then files requested via attach_file). */
+    private val takeAttachments: () -> List<Attachment> = { emptyList() },
+    /** Extra context appended to tool results, e.g. files that appeared on the device. */
+    private val stepExtras: suspend () -> String? = { null },
 ) {
     /** @return number of messages sent to the target. */
     suspend fun run(firstMessage: String, agentMode: Boolean): Int {
@@ -62,7 +66,7 @@ class AgentLoop(
         var step = 0
         while (true) {
             step++
-            val reply = target.send(message) { listener.onPartial(it) }
+            val reply = target.send(message, takeAttachments()) { listener.onPartial(it) }
             listener.onAssistant(reply.text, step)
             if (reply.timedOut) listener.onInfo("Ответ не завершился вовремя — показана полученная часть.")
             if (!agentMode) return step
@@ -102,7 +106,7 @@ class AgentLoop(
                 listener.onToolStatus(call, if (r.ok) "done" else "error", r)
                 results += call to r
             }
-            message = ToolProtocol.formatResults(results)
+            message = ToolProtocol.formatResults(results, extra = stepExtras())
         }
     }
 }

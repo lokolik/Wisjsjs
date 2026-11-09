@@ -8,51 +8,127 @@
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   const emit = (m) => setTimeout(() => window.relayUI && window.relayUI.receive(JSON.parse(JSON.stringify(m))), 0);
   const params = new URLSearchParams(location.search);
+  const fresh = params.has('fresh');
+  const ROOT = '/storage/emulated/0';
 
-  const FALLBACK = [
-    { id: 'chatgpt', name: 'ChatGPT', kind: 'web', domain: 'chatgpt.com', url: 'https://chatgpt.com/', newChatUrl: 'https://chatgpt.com/', color: '#10A37F', icon: 'GPT', selectors: {} },
-    { id: 'claude', name: 'Claude', kind: 'web', domain: 'claude.ai', url: 'https://claude.ai/new', newChatUrl: 'https://claude.ai/new', color: '#D97757', icon: 'C', selectors: {} },
-    { id: 'notion', name: 'Notion AI', kind: 'web', domain: 'notion.so', url: 'https://www.notion.so/ai', color: '#FFFFFF', icon: 'N', selectors: {} },
-    { id: 'app-hark', name: 'Hark Pro', kind: 'app', package: 'com.hark.android', color: '#F5C542', icon: 'H' }
-  ];
-  const CHATS = {
-    chatgpt: [
-      { title: 'Работа', href: 'https://chatgpt.com/g/g-p-work/project', kind: 'project' },
-      { title: 'Учёба', href: 'https://chatgpt.com/g/g-p-study/project', kind: 'project' },
-      { title: 'Скрипт для бэкапа фото', href: 'https://chatgpt.com/c/a1', kind: 'chat' },
-      { title: 'План поездки в Казань', href: 'https://chatgpt.com/c/a2', kind: 'chat' },
-      { title: 'Разбор договора аренды', href: 'https://chatgpt.com/c/a3', kind: 'chat' },
-      { title: 'Идеи для Notion-шаблона', href: 'https://chatgpt.com/c/a4', kind: 'chat' },
-      { title: 'Рецепт сырников', href: 'https://chatgpt.com/c/a5', kind: 'chat' }
+  const INSTALLED = { 'app-chatgpt': '1.2026.301', 'app-claude': '1.251020.4', 'app-hark': '2.3.1', 'app-notion': '0.6.2401' };
+  const PROFILE_CHATS = {
+    'app-chatgpt': [
+      { title: 'Работа', kind: 'project' }, { title: 'Учёба', kind: 'project' },
+      { title: 'Скрипт для бэкапа фото', kind: 'chat' }, { title: 'План поездки в Казань', kind: 'chat' },
+      { title: 'Разбор договора аренды', kind: 'chat' }, { title: 'Идеи для Notion-шаблона', kind: 'chat' }
+    ],
+    'app-hark': [
+      { title: 'Переезд', kind: 'project' }, { title: 'Поиск работы', kind: 'project' }
     ]
   };
+  const SITE_CHATS = {
+    chatgpt: [
+      { title: 'Работа', href: 'https://chatgpt.com/g/g-p-work/project', kind: 'project' },
+      { title: 'Скрипт для бэкапа фото', href: 'https://chatgpt.com/c/a1', kind: 'chat' },
+      { title: 'План поездки в Казань', href: 'https://chatgpt.com/c/a2', kind: 'chat' }
+    ]
+  };
+  const LONG_REPLY = [
+    'Вот подробный план переезда в новую квартиру — по неделям, чтобы ничего не забыть.',
+    '**За месяц до переезда**\nСоставьте список вещей по комнатам и решите, что продать, отдать или выбросить. Закажите грузчиков и машину заранее: в конце месяца их разбирают быстрее всего. Уточните у управляющей компании, нужен ли пропуск для грузовой машины и можно ли пользоваться грузовым лифтом.',
+    '**За три недели**\nНачните упаковывать то, чем пользуетесь редко: книги, сезонную одежду, посуду для гостей. Подпишите каждую коробку — комната и короткий список содержимого. Сфотографируйте, как подключена техника, чтобы потом собрать всё так же.',
+    '**За две недели**\nПереоформите интернет и коммунальные услуги, подайте заявление на смену адреса в банке, на почте и в сервисах доставки. Проверьте счётчики в новой квартире и сделайте фото показаний.',
+    '**За неделю**\nРазберите холодильник, разморозьте морозилку за два дня до переезда. Отдельно соберите «коробку первого дня»: зарядки, документы, лекарства, постельное бельё, чайник, кружки, туалетные принадлежности, инструменты.',
+    '**В день переезда**\nПроверьте, что всё погружено, снимите финальные показания счётчиков, сфотографируйте пустую квартиру. В новой квартире сначала расставьте крупную мебель, потом коробки по комнатам.',
+    '**После переезда**\nОбновите адрес в госуслугах и страховке, проверьте почтовый ящик, познакомьтесь с соседями. Распакуйте сначала кухню и спальню — остальное спокойно разберёте за неделю.',
+    'Если хотите, я сохраню этот план в файл «Переезд.md» в Документы — скажите «сохрани».'
+  ].join('\n\n');
 
   const state = {
     adapters: null,
     custom: {},
+    calibrated: fresh ? {} : { 'app-chatgpt': true },
+    chats: fresh ? {} : { 'app-chatgpt': PROFILE_CHATS['app-chatgpt'] },
     current: null,
-    settings: { approvalMode: 'ask', rootMode: 'auto', autoPreamble: true, maxSteps: 12, mcpEnabled: false, mcpPort: 8765 },
-    device: { type: 'device', suPresent: true, root: true, storage: true, accessibility: false, sdk: 35, model: 'Google Pixel 9 Pro', storageRoot: '/storage/emulated/0' },
+    settings: { approvalMode: 'ask', rootMode: 'auto', autoPreamble: true, maxSteps: 12, mcpEnabled: false, mcpPort: 8765, autoDownload: true },
+    device: fresh
+      ? { type: 'device', suPresent: true, root: null, storage: false, accessibility: false, sdk: 35, model: 'Google Pixel 9 Pro', storageRoot: ROOT }
+      : { type: 'device', suPresent: true, root: true, storage: true, accessibility: true, sdk: 35, model: 'Google Pixel 9 Pro', storageRoot: ROOT },
     mcp: { type: 'mcp', running: false, url: 'http://192.168.1.42:8765/mcp', port: 8765, token: '7f3c9a1e5b2d48f0a6c1e9d3b7a2f4c8' },
+    staged: [],
     approvals: {},
     run: 0
   };
 
-  async function adapters() {
+  async function base() {
     if (!state.adapters) {
       try {
-        const r = await fetch('../adapters.json');
-        state.adapters = (await r.json()).adapters;
+        state.adapters = (await (await fetch('../adapters.json')).json()).adapters;
       } catch (e) {
-        state.adapters = FALLBACK;
+        state.adapters = [];
       }
-      state.adapters.forEach((a) => {
-        a.builtin = true;
-        if (a.kind === 'app') a.installed = ['app-hark', 'app-chatgpt', 'app-claude'].includes(a.id);
-      });
     }
-    return state.adapters.map((a) => Object.assign({}, a, state.custom[a.id] ? Object.assign({ overridden: true }, state.custom[a.id]) : {}))
+    return state.adapters;
+  }
+
+  async function adapters() {
+    const list = (await base()).map((a) => Object.assign({ builtin: true }, a, state.custom[a.id] ? Object.assign({ overridden: true }, state.custom[a.id]) : {}))
       .concat(Object.values(state.custom).filter((c) => !state.adapters.some((a) => a.id === c.id)).map((c) => Object.assign({ custom: true }, c)));
+    list.forEach((a) => {
+      if (a.kind !== 'app') return;
+      a.package = a.package || (a.packages || [])[0];
+      a.installed = a.custom ? true : !!INSTALLED[a.id];
+      a.version = INSTALLED[a.id] || (a.custom ? '1.0' : '');
+      a.calibrated = !!state.calibrated[a.id];
+    });
+    return list;
+  }
+
+  const discovered = () => [{ package: 'com.quora.poe', label: 'Poe – Fast AI Chat' }];
+  const adaptersEvent = async () => ({ type: 'adapters', adapters: await adapters(), discovered: discovered() });
+
+  function appState(a) {
+    if (!a.installed) return 'notInstalled';
+    if (!state.device.accessibility) return 'needsAccessibility';
+    if (!state.calibrated[a.id]) return 'needsSetup';
+    return 'ready';
+  }
+
+  function appChats(a) {
+    const home = 'app:' + a.package;
+    return [{ title: 'Открытый чат в приложении', href: home, kind: 'chat' }]
+      .concat((state.chats[a.id] || []).map((c) => ({ title: c.title, href: home + '#chat:' + c.title, kind: c.kind })));
+  }
+
+  async function select(id) {
+    const a = (await adapters()).find((x) => x.id === id);
+    if (!a) return;
+    state.current = a;
+    if (a.kind === 'app') {
+      emit({ type: 'session', adapterId: a.id, state: appState(a), url: 'app:' + a.package, title: a.name });
+      emit({ type: 'chats', adapterId: a.id, items: appChats(a), updatedAt: state.chats[a.id] ? Date.now() - 600000 : 0 });
+      return;
+    }
+    await wait(500);
+    emit({ type: 'session', adapterId: a.id, state: SITE_CHATS[a.id] ? 'ready' : 'login', url: a.url });
+    emit({ type: 'chats', adapterId: a.id, items: SITE_CHATS[a.id] || [] });
+  }
+
+  async function calibrate(id, test) {
+    const a = (await adapters()).find((x) => x.id === id);
+    const step = async (key, detail, ms = 500) => {
+      emit({ type: 'calib', adapterId: id, step: key, status: 'running', detail: '' });
+      await wait(ms);
+      emit({ type: 'calib', adapterId: id, step: key, status: 'done', detail });
+    };
+    await step('open', 'Приложение открыто', 700);
+    await step('input', 'Поле ввода: «Сообщение»', 300);
+    await step('send', 'Кнопка: «Отправить»', 600);
+    await step('list', 'Лента сообщений найдена — длинные ответы дочитываю прокруткой', 300);
+    state.chats[id] = PROFILE_CHATS[id] || [{ title: 'Мой первый чат', kind: 'chat' }];
+    await step('chats', 'Чатов и проектов: ' + state.chats[id].length, 900);
+    await step('newchat', 'Кнопка нового чата найдена', 300);
+    if (test) await step('test', 'Ответ получен: «Готово»', 1200);
+    state.calibrated[id] = true;
+    emit({ type: 'calibDone', adapterId: id, ok: true, message: a.name + ' настроено' });
+    emit(await adaptersEvent());
+    if (state.current && state.current.id === id) await select(id);
   }
 
   async function stream(text, run) {
@@ -61,8 +137,8 @@
     for (let i = 0; i < words.length; i++) {
       if (run !== state.run) return false;
       acc += (i ? ' ' : '') + words[i];
-      if (i % 3 === 2 || i === words.length - 1) emit({ type: 'partial', text: acc });
-      await wait(55);
+      if (i % 4 === 3 || i === words.length - 1) emit({ type: 'partial', text: acc });
+      await wait(words.length > 80 ? 8 : 45);
     }
     return true;
   }
@@ -86,41 +162,42 @@
     return true;
   }
 
-  async function turn(text, agent) {
+  async function say(text, step, run) {
+    if (!await stream(text, run)) return false;
+    emit({ type: 'assistant', step, text, display: text });
+    return true;
+  }
+
+  async function turn(text, agent, files) {
     const run = ++state.run;
     emit({ type: 'turn', state: 'start' });
     await wait(700);
-    const folder = /папк|folder/i.test(text);
-    const list = /что (лежит|есть)|покажи|список/i.test(text);
     try {
-      if (agent && folder) {
+      if (agent && files.length && /таблиц|xlsx|excel/i.test(text)) {
+        if (!await say(`Прочитал «${files[0].name}» и собрал таблицу расходов по категориям. Файл готов: расходы-октябрь.xlsx — нажмите, чтобы скачать.`, 1, run)) return;
+        emit({ type: 'info', text: `Скачиваю из ${state.current.name}: расходы-октябрь.xlsx` });
+        await wait(900);
+        emit({ type: 'files', source: 'download', items: [{ path: ROOT + '/Download/расходы-октябрь.xlsx', name: 'расходы-октябрь.xlsx', size: 18432, mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }] });
+      } else if (/подробн|длинн|расскажи/i.test(text)) {
+        await say(LONG_REPLY, 1, run);
+      } else if (agent && /папк|folder/i.test(text)) {
         const name = (text.match(/[«"„']([^»"“']+)[»"“']/) || [])[1] || 'привет';
-        const intro = `Создаю папку «${name}» в «Загрузках».`;
-        if (!await stream(intro, run)) return;
-        emit({ type: 'assistant', step: 1, text: intro + '\nrelay\n{"tool":"mkdir","args":{"path":"~/Download/' + name + '"}}', display: intro });
-        const ok = await tool({ id: 'm' + Date.now(), tool: 'mkdir', args: { path: '~/Download/' + name } }, 'WRITE', `Создана папка: /storage/emulated/0/Download/${name}`, run);
+        if (!await say(`Создаю папку «${name}» в «Загрузках».`, 1, run)) return;
+        const ok = await tool({ id: 'm' + Date.now(), tool: 'mkdir', args: { path: '~/Download/' + name } }, 'WRITE', `Создана папка: ${ROOT}/Download/${name}`, run);
         if (run !== state.run) return;
         await wait(500);
-        const done = ok ? `Готово ✅ Папка **«${name}»** создана: \`/storage/emulated/0/Download/${name}\`. Что-нибудь положить внутрь?` : 'Хорошо, ничего не создаю.';
-        if (!await stream(done, run)) return;
-        emit({ type: 'assistant', step: 2, text: done, display: done });
-      } else if (agent && list) {
-        const intro = 'Смотрю содержимое «Загрузок».';
-        if (!await stream(intro, run)) return;
-        emit({ type: 'assistant', step: 1, text: intro, display: intro });
+        await say(ok ? `Готово ✅ Папка **«${name}»** создана: \`${ROOT}/Download/${name}\`. Что-нибудь положить внутрь?` : 'Хорошо, ничего не создаю.', 2, run);
+      } else if (agent && /что (лежит|есть)|покажи|список/i.test(text)) {
+        if (!await say('Смотрю содержимое «Загрузок».', 1, run)) return;
         await tool({ id: 'm' + Date.now(), tool: 'list_dir', args: { path: '~/Download' } }, 'READ',
-          '/storage/emulated/0/Download — 4 элем.\n📁 привет/\n📄 invoice-2026-10.pdf (182.4 КБ)\n📄 photo_0412.jpg (3.1 МБ)\n📄 notes.txt (1.2 КБ)', run);
+          ROOT + '/Download — 4 элем.\n📁 привет/\n📄 invoice-2026-10.pdf (182.4 КБ)\n📄 photo_0412.jpg (3.1 МБ)\n📄 notes.txt (1.2 КБ)', run);
         if (run !== state.run) return;
         await wait(400);
-        const done = 'В «Загрузках» 4 элемента: папка «привет», счёт invoice-2026-10.pdf, фото photo_0412.jpg и notes.txt.';
-        if (!await stream(done, run)) return;
-        emit({ type: 'assistant', step: 2, text: done, display: done });
+        await say('В «Загрузках» 4 элемента: папка «привет», счёт invoice-2026-10.pdf, фото photo_0412.jpg и notes.txt.', 2, run);
       } else {
-        const reply = agent
+        await say(agent
           ? 'Понял задачу. Опишите, что нужно сделать на устройстве — например, создать папку или найти файл, — и я выполню это через инструменты Relay.'
-          : 'Конечно! Это обычный ответ в режиме чата — без действий на устройстве.';
-        if (!await stream(reply, run)) return;
-        emit({ type: 'assistant', step: 1, text: reply, display: reply });
+          : 'Конечно! Это обычный ответ в режиме чата — без действий на устройстве.', 1, run);
       }
     } finally {
       if (run === state.run) emit({ type: 'turn', state: 'end' });
@@ -131,35 +208,43 @@
     switch (m.cmd) {
       case 'init':
         emit({
-          type: 'init', adapters: await adapters(), settings: state.settings, device: state.device, mcp: state.mcp,
-          lastAdapter: params.has('fresh') ? null : (params.get('adapter') || 'chatgpt'), version: '0.1.0 (demo)'
+          type: 'init', adapters: await adapters(), discovered: discovered(), settings: state.settings, device: state.device, mcp: state.mcp,
+          onboarded: !fresh, attachments: state.staged,
+          lastAdapter: fresh ? null : (params.get('adapter') || 'app-chatgpt'), version: '0.2.0 (demo)'
         });
         break;
-      case 'selectAdapter': {
-        const a = (await adapters()).find((x) => x.id === m.id);
-        state.current = a;
-        if (a.kind === 'app') {
-          emit({ type: 'session', adapterId: a.id, state: a.installed ? (state.device.accessibility ? 'ready' : 'needsAccessibility') : 'notInstalled', url: 'app:' + a.package });
-          emit({ type: 'chats', adapterId: a.id, items: [{ title: 'Текущий чат в приложении', href: 'app:' + a.package, kind: 'chat' }] });
-          break;
-        }
-        await wait(500);
-        emit({ type: 'session', adapterId: a.id, state: CHATS[a.id] ? 'ready' : 'login', url: a.url });
-        emit({ type: 'chats', adapterId: a.id, items: CHATS[a.id] || [] });
+      case 'scanApps':
+        emit(await adaptersEvent());
         break;
-      }
+      case 'selectAdapter':
+        await select(m.id);
+        break;
       case 'refreshChats':
-        if (state.current) emit({ type: 'chats', adapterId: state.current.id, items: CHATS[state.current.id] || [] });
+        if (!state.current) break;
+        if (state.current.kind === 'app') {
+          emit({ type: 'toast', text: `Открываю ${state.current.name} и читаю список чатов…` });
+          await wait(1200);
+          emit({ type: 'chats', adapterId: state.current.id, items: appChats(state.current), updatedAt: Date.now() });
+        } else {
+          emit({ type: 'chats', adapterId: state.current.id, items: SITE_CHATS[state.current.id] || [] });
+        }
         break;
       case 'openChat':
         emit({ type: 'url', adapterId: state.current.id, url: m.href });
         break;
       case 'newChat':
-        emit({ type: 'url', adapterId: state.current.id, url: state.current.newChatUrl || state.current.url });
+        emit({ type: 'url', adapterId: state.current.id, url: state.current.kind === 'app' ? 'app:' + state.current.package + '#new' : (state.current.newChatUrl || state.current.url) });
         break;
-      case 'send':
-        turn(m.text, m.agent);
+      case 'calibrate':
+        calibrate(m.id, m.test);
         break;
+      case 'send': {
+        const files = state.staged.filter((f) => (m.attachments || []).includes(f.id));
+        state.staged = state.staged.filter((f) => !(m.attachments || []).includes(f.id));
+        emit({ type: 'attachments', items: state.staged });
+        turn(m.text, m.agent, files);
+        break;
+      }
       case 'stop':
         state.run++;
         Object.values(state.approvals).forEach((r) => r('deny'));
@@ -172,8 +257,33 @@
         if (r) r(m.decision);
         break;
       }
+      case 'pickFiles':
+        state.staged.push({ id: 'f' + Date.now(), name: 'Отчёт за октябрь.pdf', size: 248000, mime: 'application/pdf' });
+        emit({ type: 'attachments', items: state.staged });
+        break;
+      case 'removeAttachment':
+        state.staged = state.staged.filter((f) => f.id !== m.id);
+        emit({ type: 'attachments', items: state.staged });
+        break;
+      case 'openFile':
+      case 'shareFile':
+        emit({ type: 'toast', text: (m.cmd === 'openFile' ? 'Открываю ' : 'Поделиться: ') + m.path.split('/').pop() });
+        break;
+      case 'installApp':
+        emit({ type: 'toast', text: 'Открываю Google Play: ' + m.package });
+        break;
       case 'showSite':
-        emit({ type: 'toast', text: 'В приложении здесь откроется сайт ' + (state.current ? state.current.name : '') });
+        emit({ type: 'toast', text: state.current && state.current.kind === 'app' ? 'Открываю ' + state.current.name : 'В приложении здесь откроется сайт' });
+        break;
+      case 'dumpScreen':
+        emit({ type: 'files', source: 'dump', items: [{ path: ROOT + '/Download/relay-screen-app-chatgpt.json', name: 'relay-screen-app-chatgpt.json', size: 48211, mime: 'application/json' }] });
+        break;
+      case 'resetSetup':
+        delete state.calibrated[m.id];
+        emit(await adaptersEvent());
+        if (state.current && state.current.id === m.id) await select(m.id);
+        break;
+      case 'finishOnboarding':
         break;
       case 'pick':
         await wait(600);
@@ -184,22 +294,16 @@
         break;
       case 'saveAdapter':
         state.custom[m.adapter.id] = m.adapter;
-        emit({ type: 'adapters', adapters: await adapters() });
+        emit(await adaptersEvent());
         emit({ type: 'toast', text: 'Сохранено' });
         break;
       case 'deleteAdapter':
         delete state.custom[m.id];
-        emit({ type: 'adapters', adapters: await adapters() });
+        emit(await adaptersEvent());
         break;
       case 'listApps':
         await wait(300);
-        emit({
-          type: 'apps', items: [
-            { package: 'com.anthropic.claude', label: 'Claude' }, { package: 'com.hark.android', label: 'Hark Pro' },
-            { package: 'com.openai.chatgpt', label: 'ChatGPT' }, { package: 'notion.id', label: 'Notion' },
-            { package: 'org.telegram.messenger', label: 'Telegram' }
-          ]
-        });
+        emit({ type: 'apps', items: [{ package: 'com.quora.poe', label: 'Poe' }, { package: 'org.telegram.messenger', label: 'Telegram' }] });
         break;
       case 'setSetting':
         state.settings[m.key] = m.value;
@@ -209,8 +313,16 @@
         if (m.which === 'accessibility') state.device.accessibility = true;
         if (m.which === 'storage') state.device.storage = true;
         emit(state.device);
+        if (state.current) await select(state.current.id);
+        break;
+      case 'autoSetup':
+        await wait(600);
+        Object.assign(state.device, { root: true, storage: true, accessibility: true });
+        emit(state.device);
+        emit({ type: 'toast', text: 'Всё настроено через root' });
         break;
       case 'checkRoot':
+        state.device.root = true;
         emit(state.device);
         emit({ type: 'toast', text: 'Root-доступ получен' });
         break;

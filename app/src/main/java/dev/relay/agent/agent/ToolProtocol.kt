@@ -39,6 +39,11 @@ object ToolProtocol {
         appendLine("• Root: ${if (ctx.rootAvailable) "доступен (shell с \"root\": true)" else "недоступен"}.")
         appendLine("• Удаление и shell пользователь подтверждает вручную.")
         appendLine()
+        appendLine("Файлы:")
+        appendLine("• Файлы, которые пользователь прикрепил, приходят вместе с сообщением. Нужен файл с устройства — вызови attach_file, он придёт со следующим сообщением.")
+        appendLine("• Текстовый файл (код, md, csv, html, json…) создавай через write_file. Если файл доступен по ссылке — download_file.")
+        appendLine("• Если ты создал файл у себя (PDF, таблица, картинка) — дай кнопку/ссылку «Скачать» в ответе: Relay сам скачает его в ~/Download и сообщит путь.")
+        appendLine()
         appendLine("Инструменты:")
         for (s in specs) {
             val params = s.params.joinToString(", ") { p -> "\"${p.name}\": ${p.type}${if (p.required) "" else "?"}" }
@@ -79,12 +84,21 @@ object ToolProtocol {
             .trim()
     }
 
-    fun formatResults(items: List<Pair<ToolCall, ToolResult>>, maxEach: Int = 4000, maxTotal: Int = 12_000): String {
+    fun formatResults(
+        items: List<Pair<ToolCall, ToolResult>>,
+        maxEach: Int = 4000,
+        maxTotal: Int = 12_000,
+        extra: String? = null,
+    ): String {
         val body = buildString {
             appendLine(RESULT_HEADER)
             items.forEachIndexed { i, (call, res) ->
                 appendLine("${i + 1}) ${call.tool} ${compactArgs(call.args)} → ${if (res.ok) "OK" else "ОШИБКА"}")
                 appendLine(truncate(res.output.trim(), maxEach))
+                appendLine()
+            }
+            if (!extra.isNullOrBlank()) {
+                appendLine(extra.trim())
                 appendLine()
             }
         }
@@ -198,4 +212,8 @@ object ToolProtocol {
     fun callsToJson(calls: List<ToolCall>): JSONArray = JSONArray().also { arr ->
         calls.forEach { arr.put(JSONObject().put("id", it.id).put("tool", it.tool).put("args", it.args)) }
     }
+
+    /** Contents of ``` fenced blocks in markdown copied from an app's "Copy" button. */
+    fun fencedBlocks(markdown: String): List<String> =
+        Regex("```[^\\n`]*\\n([\\s\\S]*?)```").findAll(markdown).map { it.groupValues[1].trimEnd() }.toList()
 }

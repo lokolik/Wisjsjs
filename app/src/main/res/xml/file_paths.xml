@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <external-path name="storage" path="." />
+    <cache-path name="cache" path="." />
+    <files-path name="files" path="." />
+    <!-- Files the agent finds outside shared storage (e.g. via root). -->
+    <root-path name="root" path="." />
+</paths>

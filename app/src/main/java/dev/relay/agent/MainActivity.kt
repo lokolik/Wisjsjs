@@ -69,6 +69,48 @@ class MainActivity : Activity() {
         }
         ui.loadUrl("file:///android_asset/ui/index.html")
         controller.start()
+        handleShare(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleShare(intent)
+    }
+
+    /** Files and text shared to Relay from other apps become composer attachments. */
+    private fun handleShare(intent: Intent?) {
+        if (intent?.action == Intent.ACTION_SEND || intent?.action == Intent.ACTION_SEND_MULTIPLE) {
+            controller.onShareIntent(intent)
+            setIntent(Intent(this, MainActivity::class.java))
+        }
+    }
+
+    private val results = HashMap<Int, (Int, Intent?) -> Unit>()
+    private var nextRequest = 100
+
+    fun startForResult(intent: Intent, cb: (Int, Intent?) -> Unit) {
+        val code = nextRequest++
+        results[code] = cb
+        try {
+            @Suppress("DEPRECATION")
+            startActivityForResult(intent, code)
+        } catch (e: Exception) {
+            results.remove(code)
+            cb(RESULT_CANCELED, null)
+        }
+    }
+
+    @Deprecated("Activity Result API needs androidx.activity; the platform callback is enough here")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        @Suppress("DEPRECATION")
+        super.onActivityResult(requestCode, resultCode, data)
+        results.remove(requestCode)?.invoke(resultCode, data)
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (::controller.isInitialized) controller.onFocus(hasFocus)
     }
 
     private inner class UiBridge {

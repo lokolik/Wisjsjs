@@ -21,7 +21,8 @@ import java.util.concurrent.Executors
 /** JSON-RPC side of the Model Context Protocol: exposes the device tools to any MCP client. */
 class McpHandler(
     private val callTool: (ToolCall) -> ToolResult,
-    private val specs: List<ToolSpec> = ToolExecutor.SPECS,
+    // attach_file only makes sense inside a Relay chat.
+    private val specs: List<ToolSpec> = ToolExecutor.SPECS.filter { it.name != "attach_file" },
     private val serverName: String = "relay-phone",
     private val serverVersion: String = "0.1.0",
 ) {

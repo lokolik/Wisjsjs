@@ -13,12 +13,21 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
+import java.net.InetAddress
+import java.net.ServerSocket
 
 class FakePlatform(override val storageRoot: File) : Platform {
     val opened = mutableListOf<String>()
+    val attached = mutableListOf<File>()
+    val created = mutableListOf<Pair<File, String>>()
     override fun openUrl(url: String): String = "Открыто: $url".also { opened += url }
     override fun launchApp(nameOrPackage: String): String = "Запущено: $nameOrPackage"
     override fun deviceInfo(): Map<String, Any?> = mapOf("Устройство" to "Test")
+    override fun openFile(file: File): String = "Открыт файл: ${file.path}".also { opened += file.path }
+    override fun attachFile(file: File): String = "Файл ${file.name} будет прикреплён к следующему сообщению".also { attached += file }
+    override fun onFileCreated(file: File, source: String) {
+        created += file to source
+    }
 }
 
 /** Root-capable shell that records commands instead of running su. */
@@ -138,5 +147,88 @@ class ToolExecutorTest {
     @Test
     fun shellQuoteEscapesSingleQuotes() {
         assertEquals("'it'\\''s'", Shell.quote("it's"))
+    }
+
+    /** Tiny HTTP/1.1 server (android.jar has no com.sun.net.httpserver). */
+    private fun httpServer(routes: Map<String, Pair<String, ByteArray>>): ServerSocket {
+        val server = ServerSocket(0, 50, InetAddress.getLoopbackAddress())
+        Thread {
+            while (!server.isClosed) {
+                val s = try {
+                    server.accept()
+                } catch (e: Exception) {
+                    break
+                }
+                s.use { sock ->
+                    val reader = sock.getInputStream().bufferedReader()
+                    val path = reader.readLine()?.split(" ")?.getOrNull(1) ?: return@use
+                    while (reader.readLine()?.isNotEmpty() == true) Unit
+                    val (head, body) = routes[path] ?: ("HTTP/1.1 404 Not Found" to ByteArray(0))
+                    val out = sock.getOutputStream()
+                    out.write("$head\r\nContent-Length: ${body.size}\r\nConnection: close\r\n\r\n".toByteArray(Charsets.ISO_8859_1))
+                    out.write(body)
+                    out.flush()
+                }
+            }
+        }.apply { isDaemon = true }.start()
+        return server
+    }
+
+    @Test
+    fun downloadsFileWithNameFromHeadersFollowingRedirects() {
+        val server = httpServer(
+            mapOf(
+                "/go" to ("HTTP/1.1 302 Found\r\nLocation: /files/x" to ByteArray(0)),
+                "/files/x" to (
+                    "HTTP/1.1 200 OK\r\nContent-Disposition: attachment; filename*=UTF-8''%D0%BE%D1%82%D1%87%D1%91%D1%82.txt" to
+                        "отчёт".toByteArray()
+                    ),
+                "/plain/data.csv" to ("HTTP/1.1 200 OK\r\nContent-Type: text/csv" to "a,b\n1,2".toByteArray()),
+            ),
+        )
+        try {
+            val root = tmp.newFolder("dl")
+            val platform = FakePlatform(root)
+            val ex = ToolExecutor(platform, FakeRootShell(false)) { false }
+            val base = "http://127.0.0.1:${server.localPort}"
+            val r = ex.execute(call("download_file", "url" to "$base/go"))
+            assertTrue(r.output, r.ok)
+            assertEquals("отчёт", File(root, "Download/отчёт.txt").readText())
+            // Same name again → unique copy instead of overwriting.
+            assertTrue(ex.execute(call("download_file", "url" to "$base/go")).ok)
+            assertTrue(File(root, "Download/отчёт (1).txt").isFile)
+            val toDir = ex.execute(call("download_file", "url" to "$base/plain/data.csv", "path" to "~/Documents/"))
+            assertTrue(toDir.output, toDir.ok)
+            assertEquals("a,b\n1,2", File(root, "Documents/data.csv").readText())
+            assertEquals(3, platform.created.size)
+            assertTrue(ex.touched.contains(File(root, "Download/отчёт.txt").path))
+            assertFalse(ex.execute(call("download_file", "url" to "$base/missing")).ok)
+            assertFalse(ex.execute(call("download_file", "url" to "file:///etc/passwd")).ok)
+        } finally {
+            server.close()
+        }
+    }
+
+    @Test
+    fun attachAndOpenFiles() {
+        val root = tmp.newFolder("st2")
+        val platform = FakePlatform(root)
+        val ex = ToolExecutor(platform, FakeRootShell(false)) { false }
+        File(root, "Documents").mkdirs()
+        File(root, "Documents/report.pdf").writeText("%PDF")
+        val r = ex.execute(call("attach_file", "path" to "Документы/report.pdf"))
+        assertTrue(r.output, r.ok)
+        assertEquals("report.pdf", platform.attached.single().name)
+        assertFalse(ex.execute(call("attach_file", "path" to "~/Documents")).ok)
+        assertFalse(ex.execute(call("attach_file", "path" to "~/nope.pdf")).ok)
+        assertTrue(ex.execute(call("open_file", "path" to "~/Documents/report.pdf")).ok)
+        assertTrue(platform.opened.last().endsWith("report.pdf"))
+    }
+
+    @Test
+    fun fileNameParsing() {
+        assertEquals("a b.pdf", ToolExecutor.fileNameFrom("attachment; filename=\"a b.pdf\""))
+        assertEquals("x.csv", ToolExecutor.fileNameFrom("inline; filename=x.csv; size=10"))
+        assertEquals(null, ToolExecutor.fileNameFrom(null))
     }
 }

@@ -43,6 +43,38 @@ class Prefs(context: Context) {
         get() = sp.getString("lastAdapter", null)
         set(v) = sp.edit().putString("lastAdapter", v).apply()
 
+    var onboarded: Boolean
+        get() = sp.getBoolean("onboarded", false)
+        set(v) = sp.edit().putBoolean("onboarded", v).apply()
+
+    /** Tap "download" on files in AI replies automatically. */
+    var autoDownload: Boolean
+        get() = sp.getBoolean("autoDownload", true)
+        set(v) = sp.edit().putBoolean("autoDownload", v).apply()
+
+    /** Per-app auto-setup results: hints, chat list, report. */
+    fun profile(id: String): JSONObject? = profiles().optJSONObject(id)
+
+    fun updateProfile(id: String, change: (JSONObject) -> Unit) {
+        val all = profiles()
+        val p = all.optJSONObject(id) ?: JSONObject()
+        change(p)
+        all.put(id, p)
+        sp.edit().putString("appProfiles", all.toString()).apply()
+    }
+
+    fun resetProfile(id: String) {
+        val all = profiles()
+        all.remove(id)
+        sp.edit().putString("appProfiles", all.toString()).apply()
+    }
+
+    private fun profiles(): JSONObject = try {
+        JSONObject(sp.getString("appProfiles", "{}") ?: "{}")
+    } catch (e: Exception) {
+        JSONObject()
+    }
+
     /** User-added sites/apps and overrides of built-in adapters (same id). */
     var customAdapters: JSONArray
         get() = try {
@@ -74,6 +106,7 @@ class Prefs(context: Context) {
         .put("maxSteps", maxSteps)
         .put("mcpEnabled", mcpEnabled)
         .put("mcpPort", mcpPort)
+        .put("autoDownload", autoDownload)
 
     private fun newToken(): String {
         val bytes = ByteArray(18)

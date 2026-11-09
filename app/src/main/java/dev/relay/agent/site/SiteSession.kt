@@ -4,15 +4,20 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Intent
 import android.graphics.Color
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.util.Base64
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
+import android.webkit.URLUtil
+import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import dev.relay.agent.agent.Attachment
 import dev.relay.agent.agent.ChatTarget
 import dev.relay.agent.agent.TargetReply
 import kotlinx.coroutines.CancellationException
@@ -20,6 +25,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -31,6 +37,14 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.resume
 
+/** What a website session needs from Relay: file pickers and downloads. */
+interface SiteHost {
+    val autoDownload: Boolean
+    fun chooseFiles(cb: (Array<Uri>?) -> Unit)
+    fun download(url: String, userAgent: String, disposition: String?, mime: String?)
+    fun saveDataUrl(name: String, dataUrl: String)
+}
+
 /**
  * One AI website in its own WebView, logged in with the user's normal account.
  * Prompts are typed into the site's own chat box by relay-core.js and replies are read from the page.
@@ -41,6 +55,7 @@ class SiteSession(
     adapter: JSONObject,
     private val coreJs: String,
     private val scope: CoroutineScope,
+    private val host: SiteHost,
     private val onEvent: (SiteSession, JSONObject) -> Unit,
 ) : ChatTarget {
     var adapter: JSONObject = adapter
@@ -76,7 +91,20 @@ class SiteSession(
         webView.setBackgroundColor(Color.WHITE)
         webView.addJavascriptInterface(Bridge(), "RelayNative")
         webView.webViewClient = Client()
-        webView.webChromeClient = WebChromeClient()
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onShowFileChooser(view: WebView, callback: ValueCallback<Array<Uri>>, params: FileChooserParams): Boolean {
+                host.chooseFiles { uris -> callback.onReceiveValue(uris) }
+                return true
+            }
+        }
+        webView.setDownloadListener { url, userAgent, disposition, mime, _ ->
+            val name = URLUtil.guessFileName(url, disposition, mime)
+            when {
+                url.startsWith("blob:") -> scope.launch { runCatching { eval(blobJs(url, name)) } }
+                url.startsWith("data:") -> host.saveDataUrl(name, url)
+                else -> host.download(url, userAgent, disposition, mime)
+            }
+        }
         webView.loadUrl(adapter.optString("url"))
     }
 
@@ -112,6 +140,7 @@ class SiteSession(
         .put("submit", adapter.optString("submit", "auto"))
         .put("stableMs", adapter.optInt("stableMs", 2200))
         .put("timeoutMs", TIMEOUT_MS)
+        .put("autoDownload", host.autoDownload)
         .toString()
 
     /** Idempotent: the core script keeps its state if the same version is already loaded. */
@@ -143,25 +172,46 @@ class SiteSession(
         return evalJson("window.__relay.listChats()") as? JSONArray ?: JSONArray()
     }
 
-    suspend fun diagnose(): JSONObject {
+    suspend fun diagnose(selectors: JSONObject?): JSONObject {
         ensureCore()
-        return evalJson("window.__relay.diagnose()") as? JSONObject ?: JSONObject()
+        return evalJson("window.__relay.diagnose(${selectors?.toString() ?: "null"})") as? JSONObject ?: JSONObject()
     }
 
     fun navigate(url: String) {
         webView.loadUrl(url)
     }
 
-    override suspend fun send(text: String, onPartial: (String) -> Unit): TargetReply {
+    /** Hands files to the page as real File objects (file input, paste or drop — whatever the site supports). */
+    private suspend fun attach(files: List<Attachment>) {
+        var total = 0L
+        val arr = JSONArray()
+        for (a in files) {
+            total += a.size
+            if (a.size > MAX_SITE_FILE || total > MAX_SITE_TOTAL) {
+                throw IllegalStateException("Файл «${a.name}» слишком большой для отправки на сайт (до ${MAX_SITE_FILE / 1024 / 1024} МБ)")
+            }
+            val b64 = withContext(Dispatchers.IO) { Base64.encodeToString(a.file.readBytes(), Base64.NO_WRAP) }
+            arr.put(JSONObject().put("name", a.name).put("mime", a.mime).put("b64", b64))
+        }
+        val res = evalJson("window.__relay.attach($arr)") as? JSONObject
+        if (res == null || !res.optBoolean("ok")) {
+            throw IllegalStateException("Сайт не принял файлы: не найдено поле загрузки. Откройте сайт (🌐) и прикрепите вручную.")
+        }
+        delay(1200)
+    }
+
+    override suspend fun send(text: String, attachments: List<Attachment>, onPartial: (String) -> Unit): TargetReply {
         ensureCore()
+        if (attachments.isNotEmpty()) attach(attachments)
         val id = UUID.randomUUID().toString()
         val done = CompletableDeferred<JSONObject>()
         pending[id] = done
         partials[id] = onPartial
         prompts[id] = text
         try {
-            eval("window.__relay.send(${JSONObject.quote(text)}, ${JSONObject.quote(id)})")
-            val ev = withTimeout(TIMEOUT_MS + 20_000L) { done.await() }
+            val opts = JSONObject().put("attachments", attachments.size)
+            eval("window.__relay.send(${JSONObject.quote(text)}, ${JSONObject.quote(id)}, $opts)")
+            val ev = withTimeout(TIMEOUT_MS + 60_000L) { done.await() }
             if (ev.optString("type") == "error") throw IllegalStateException(ev.optString("message", "Ошибка на сайте"))
             val code = ev.optJSONArray("code")?.let { arr -> List(arr.length()) { arr.optString(it) } } ?: emptyList()
             return TargetReply(ev.optString("text"), code, ev.optBoolean("timeout"))
@@ -210,6 +260,7 @@ class SiteSession(
                     val waiter = pending[id]
                     if (waiter != null) waiter.complete(obj) else main.post { onEvent(this@SiteSession, obj) }
                 }
+                "blob" -> host.saveDataUrl(obj.optString("name", "download"), obj.optString("data"))
                 else -> main.post { onEvent(this@SiteSession, obj) }
             }
         }
@@ -219,7 +270,7 @@ class SiteSession(
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
             val uri = request.url
             val scheme = uri.scheme ?: return false
-            if (scheme == "http" || scheme == "https") return false
+            if (scheme == "http" || scheme == "https" || scheme == "blob" || scheme == "data") return false
             runCatching { activity.startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
             return true
         }
@@ -246,7 +297,16 @@ class SiteSession(
 
     companion object {
         const val TIMEOUT_MS = 240_000L
+        private const val MAX_SITE_FILE = 20L * 1024 * 1024
+        private const val MAX_SITE_TOTAL = 40L * 1024 * 1024
         const val DESKTOP_UA =
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+        /** blob: URLs only exist inside the page, so the page reads them and hands the bytes over. */
+        private fun blobJs(url: String, name: String) = """
+            (function(){fetch(${JSONObject.quote(url)}).then(function(r){return r.blob()}).then(function(b){
+              var fr=new FileReader();fr.onload=function(){RelayNative.postMessage(JSON.stringify({type:'blob',name:${JSONObject.quote(name)},mime:b.type,data:fr.result}))};
+              fr.readAsDataURL(b);}).catch(function(e){RelayNative.postMessage(JSON.stringify({type:'log',message:'blob: '+e}))});})();true
+        """.trimIndent()
     }
 }

@@ -1,92 +1,103 @@
 package dev.relay.agent.nativeapp
 
-import android.content.Context
 import android.content.Intent
-import android.os.Build
-import android.os.Bundle
-import android.os.SystemClock
-import android.view.accessibility.AccessibilityNodeInfo
+import dev.relay.agent.agent.Attachment
 import dev.relay.agent.agent.ChatTarget
 import dev.relay.agent.agent.TargetReply
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
+import dev.relay.agent.agent.ToolProtocol
+import dev.relay.agent.tools.ToolExecutor
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 
-/** Chat inside an installed app, driven through [RelayAccessibilityService]. */
+/** What the app driver needs from Relay itself. */
+interface NativeHost {
+    /** Brings Relay back to the foreground; true once it has window focus. */
+    suspend fun returnToRelay(): Boolean
+    fun canReadClipboard(): Boolean
+    suspend fun readClipboard(): String?
+    suspend fun writeClipboard(text: String?)
+    /** ACTION_SEND intent targeted at [pkg], or null if the app does not accept shared files. */
+    fun shareIntent(pkg: String, attachments: List<Attachment>): Intent?
+}
+
+/** Chat inside an installed app (Hark Pro, ChatGPT, Claude, Notion…), driven by [AppDriver]. */
 class NativeAppTarget(
-    private val context: Context,
-    private val packageName: String,
-    private val returnTo: Class<*>,
+    private val driver: AppDriver,
+    private val host: NativeHost,
+    private val shareMode: String,
+    private val autoDownload: () -> Boolean,
+    private val takeNav: () -> AppDriver.Nav?,
+    private val onFilesTapped: (List<String>) -> Unit = {},
 ) : ChatTarget {
 
-    override suspend fun send(text: String, onPartial: (String) -> Unit): TargetReply = withContext(Dispatchers.Main) {
-        val svc = RelayAccessibilityService.instance
-            ?: throw IllegalStateException("Включите службу «Relay» в Спец. возможностях: Настройки Relay → Разрешения.")
-        val launch = context.packageManager.getLaunchIntentForPackage(packageName)
-            ?: throw IllegalStateException("Приложение $packageName не установлено")
-        context.startActivity(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    override suspend fun send(text: String, attachments: List<Attachment>, onPartial: (String) -> Unit): TargetReply {
+        val clipKnown = host.canReadClipboard()
+        val prevClip = if (clipKnown) host.readClipboard() else null
+        var prompt = text
+        var share: Intent? = null
+        if (attachments.isNotEmpty()) {
+            share = if (shareMode != "off") host.shareIntent(driver.pkg, attachments) else null
+            if (share == null) prompt = inline(text, attachments)
+        }
+        val nav = takeNav()
         try {
-            var edit: AccessibilityNodeInfo? = null
-            val openDeadline = SystemClock.uptimeMillis() + 12_000
-            while (edit == null && SystemClock.uptimeMillis() < openDeadline) {
-                delay(400)
-                edit = NodeUtils.findEditable(svc.rootOf(packageName))
-            }
-            if (edit == null) throw IllegalStateException("Не нашёл поле ввода в приложении. Откройте нужный чат в нём и повторите.")
-
-            val before = NodeUtils.texts(svc.rootOf(packageName)).groupingBy { it }.eachCount()
-            edit.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            edit.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
-            val args = Bundle().apply {
-                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
-            }
-            if (!edit.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) {
-                throw IllegalStateException("Приложение не принимает текст через спец. возможности")
-            }
-            delay(600)
-
-            val root = svc.rootOf(packageName)
-            val edit2 = NodeUtils.findEditable(root) ?: edit
-            var sent = NodeUtils.findSend(root, edit2)?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
-            if (!sent && Build.VERSION.SDK_INT >= 30) {
-                sent = edit2.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
-            }
-            if (!sent) throw IllegalStateException("Не нашёл кнопку «Отправить» в приложении")
-
-            val prompt = text.trim()
-            var last = ""
-            var lastChange = SystemClock.uptimeMillis()
-            val deadline = lastChange + 180_000
-            var timedOut = true
-            while (SystemClock.uptimeMillis() < deadline) {
-                delay(700)
-                val r = svc.rootOf(packageName) ?: continue
-                val remaining = HashMap(before)
-                val fresh = NodeUtils.texts(r)
-                    .filter { t ->
-                        val c = remaining[t] ?: 0
-                        if (c > 0) {
-                            remaining[t] = c - 1
-                            false
-                        } else {
-                            true
-                        }
-                    }
-                    .filter { t -> t != prompt && !(t.length >= 12 && prompt.contains(t)) }
-                val cur = fresh.joinToString("\n").trim()
-                val now = SystemClock.uptimeMillis()
-                if (cur != last) {
-                    last = cur
-                    lastChange = now
-                    if (cur.isNotEmpty()) onPartial(cur)
-                } else if (cur.isNotEmpty() && now - lastChange > 3500) {
-                    timedOut = false
-                    break
+            val r = driver.send(
+                text = prompt,
+                nav = if (share == null) nav else null,
+                share = share,
+                waitSendMs = if (share != null) 45_000 else 2_500,
+                autoDownload = autoDownload(),
+                onPartial = onPartial,
+            )
+            if (r.filesTapped.isNotEmpty()) onFilesTapped(r.filesTapped)
+            var reply = r.lines.joinToString("\n").trim()
+            var blocks = emptyList<String>()
+            host.returnToRelay()
+            if (r.copied) {
+                val clip = host.readClipboard()
+                // The copied markdown is complete and keeps ``` fences; use it if it is really this reply.
+                if (!clip.isNullOrBlank() && clip != prevClip && agrees(clip, reply)) {
+                    reply = clip.trim()
+                    blocks = ToolProtocol.fencedBlocks(clip)
                 }
             }
-            TargetReply(last, emptyList(), timedOut)
+            return TargetReply(reply, blocks, r.timedOut)
         } finally {
-            svc.bringToFront(returnTo)
+            withContext(NonCancellable) {
+                host.returnToRelay()
+                if (clipKnown && host.readClipboard() != prevClip) host.writeClipboard(prevClip)
+            }
         }
+    }
+
+    private fun inline(text: String, attachments: List<Attachment>): String {
+        val sb = StringBuilder(text)
+        for (a in attachments) {
+            if (!a.isText || a.size > INLINE_LIMIT) {
+                throw DriverException(
+                    "${driver.appName} не принимает файлы через «Поделиться», а «${a.name}» нельзя вставить текстом. " +
+                        "Прикрепите его в приложении вручную или выберите сервис с поддержкой файлов.",
+                )
+            }
+            sb.append("\n\n[Файл: ").append(a.name).append("]\n```\n").append(a.file.readText().trimEnd()).append("\n```")
+        }
+        return sb.toString()
+    }
+
+    companion object {
+        private const val INLINE_LIMIT = 200L * 1024
+        private val MD = Regex("""[*_`#>\[\]]""")
+
+        /** True when copied text and on-screen text are the same reply (markdown vs rendered text). */
+        fun agrees(clip: String, screen: String): Boolean {
+            val c = ScreenAnalyzer.norm(clip.replace(MD, ""))
+            val s = ScreenAnalyzer.norm(screen.replace(MD, ""))
+            if (s.isEmpty()) return c.isNotEmpty()
+            val head = s.take(20)
+            val tail = s.takeLast(20)
+            return c.contains(head) || c.contains(tail) || s.contains(c.take(20))
+        }
+
+        const val MAX_ATTACH = ToolExecutor.MAX_ATTACH
     }
 }

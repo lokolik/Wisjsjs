@@ -12,7 +12,8 @@
   #msgs { flex: 1; overflow: auto; padding: 12px; }
   .user { background: #eef; margin: 6px 0; padding: 6px; white-space: pre-wrap; }
   .assistant { background: #efe; margin: 6px 0; padding: 6px; }
-  #composer { display: flex; gap: 6px; padding: 8px; border-top: 1px solid #ddd; }
+  #composer { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; border-top: 1px solid #ddd; }
+  #filesbar { width: 100%; font-size: 12px; color: #555; }
   #editor, #ta { flex: 1; min-height: 40px; border: 1px solid #ccc; padding: 6px; }
   pre { background: #222; color: #eee; padding: 6px; }
   .hdr { font-size: 11px; color: #aaa; }
@@ -34,10 +35,26 @@
   <form id="composer"></form>
 </main>
 <script>
-  // Simulates a modern chat site. ?mode=textarea → plain textarea + Enter to send, no send button, no data attributes.
+  // Simulates a modern chat site.
+  //  ?mode=textarea → plain textarea + Enter to send, no send button, no data attributes.
+  //  ?mode=paste    → no file input; files are accepted only by pasting into the editor.
   var mode = new URLSearchParams(location.search).get('mode') || 'rich';
   var composer = document.getElementById('composer');
   var input, sendBtn, stopBtn;
+  var uploading = false;
+  window.__sent = [];
+  window.__files = [];
+  window.__downloads = [];
+
+  function addFiles(list) {
+    Array.prototype.forEach.call(list, function (f) { window.__files.push(f.name + ':' + f.size + ':' + f.type); });
+    document.getElementById('filesbar').textContent = window.__files.map(function (x) { return x.split(':')[0]; }).join(', ');
+    // Pretend to upload: the send button stays disabled for a moment.
+    uploading = true;
+    if (sendBtn) sendBtn.disabled = true;
+    setTimeout(function () { uploading = false; if (sendBtn) sendBtn.disabled = !input.innerText.trim(); }, 1200);
+  }
+
   if (mode === 'textarea') {
     composer.innerHTML = '<textarea id="ta" placeholder="Спросите что-нибудь"></textarea>';
     input = document.getElementById('ta');
@@ -46,14 +63,25 @@
     });
     document.querySelectorAll('.assistant').forEach(function (a) { a.removeAttribute('data-role'); });
   } else {
-    composer.innerHTML = '<div id="editor" class="ProseMirror" contenteditable="true" data-placeholder="Message"></div>' +
+    composer.innerHTML = '<div id="filesbar"></div>' +
+      (mode === 'paste' ? '' : '<input type="file" id="fileIn" multiple accept="image/*,.pdf,.txt,.csv,application/pdf" hidden>') +
+      '<div id="editor" class="ProseMirror" contenteditable="true" data-placeholder="Message"></div>' +
+      '<button type="button" aria-label="Attach files">📎</button>' +
       '<button type="button" aria-label="Voice mode">🎤</button>' +
       '<button type="submit" data-testid="send-button" aria-label="Send prompt" disabled>↑</button>';
     input = document.getElementById('editor');
     sendBtn = composer.querySelector('[data-testid="send-button"]');
-    input.addEventListener('input', function () { sendBtn.disabled = !input.innerText.trim(); });
+    var fileIn = document.getElementById('fileIn');
+    if (fileIn) fileIn.addEventListener('change', function () { addFiles(fileIn.files); });
+    if (mode === 'paste') {
+      input.addEventListener('paste', function (e) {
+        if (e.clipboardData && e.clipboardData.files.length) { e.preventDefault(); addFiles(e.clipboardData.files); }
+      });
+    }
+    input.addEventListener('input', function () { sendBtn.disabled = uploading || !input.innerText.trim(); });
     composer.addEventListener('submit', function (e) {
       e.preventDefault();
+      if (uploading) return;
       var t = input.innerText;
       input.innerHTML = '';
       sendBtn.disabled = true;
@@ -61,7 +89,6 @@
     });
   }
 
-  window.__sent = [];
   function submitPrompt(text) {
     if (!text.trim()) return;
     window.__sent.push(text);
@@ -82,7 +109,9 @@
       composer.appendChild(stopBtn);
     }
     var wantsTool = /папк/i.test(text);
-    var words = (wantsTool ? 'Сейчас создам папку на вашем устройстве.' : 'Готово, задача выполнена без инструментов.').split(' ');
+    var wantsFile = /файл/i.test(text);
+    var reply = wantsTool ? 'Сейчас создам папку на вашем устройстве.' : wantsFile ? 'Готово, вот файл с таблицей.' : 'Готово, задача выполнена без инструментов.';
+    var words = reply.split(' ');
     var p = document.createElement('p');
     a.appendChild(p);
     var i = 0;
@@ -94,6 +123,14 @@
         pre.innerHTML = '<div class="hdr">relay <button type="button">Copy code</button></div><code></code>';
         pre.querySelector('code').textContent = '{"tool": "mkdir", "args": {"path": "~/Download/привет"}}';
         a.appendChild(pre);
+      }
+      if (wantsFile) {
+        var link = document.createElement('a');
+        link.href = '/files/report.csv';
+        link.setAttribute('download', 'report.csv');
+        link.textContent = 'report.csv';
+        link.addEventListener('click', function (e) { e.preventDefault(); window.__downloads.push(link.getAttribute('download')); });
+        a.appendChild(link);
       }
       if (stopBtn) { stopBtn.remove(); stopBtn = null; }
     }, 120);

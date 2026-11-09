@@ -4,6 +4,7 @@ import dev.relay.agent.agent.AgentListener
 import dev.relay.agent.agent.AgentLoop
 import dev.relay.agent.agent.ApprovalMode
 import dev.relay.agent.agent.ApprovalPolicy
+import dev.relay.agent.agent.Attachment
 import dev.relay.agent.agent.ChatTarget
 import dev.relay.agent.agent.Decision
 import dev.relay.agent.agent.TargetReply
@@ -26,8 +27,10 @@ class AgentLoopTest {
 
     private class ScriptedTarget(private val replies: List<String>) : ChatTarget {
         val sent = mutableListOf<String>()
-        override suspend fun send(text: String, onPartial: (String) -> Unit): TargetReply {
+        val sentFiles = mutableListOf<List<String>>()
+        override suspend fun send(text: String, attachments: List<Attachment>, onPartial: (String) -> Unit): TargetReply {
             sent += text
+            sentFiles += attachments.map { it.name }
             val reply = replies[sent.size - 1]
             onPartial(reply.take(5))
             return TargetReply(reply)
@@ -121,5 +124,30 @@ class AgentLoopTest {
         val steps = AgentLoop(target, { ex.execute(it) }, ToolExecutor::riskOf, listener, ApprovalPolicy(ApprovalMode.AUTO_ALL), maxSteps = 3).run("x", true)
         assertEquals(3, steps)
         assertEquals("info", listener.events.last())
+    }
+
+    @Test
+    fun userAttachmentsGoFirstAndAttachFileGoesWithTheResults() = runBlocking {
+        val root = tmp.newFolder("st")
+        File(root, "Documents").mkdirs()
+        File(root, "Documents/plan.pdf").writeText("%PDF")
+        val queue = ArrayDeque<Attachment>()
+        queue += Attachment(File(root, "photo.jpg").apply { writeText("jpg") })
+        val platform = object : dev.relay.agent.tools.Platform by FakePlatform(root) {
+            override fun attachFile(file: File): String {
+                queue += Attachment(file)
+                return "Файл ${file.name} будет прикреплён к следующему сообщению"
+            }
+        }
+        val ex = ToolExecutor(platform, FakeRootShell(false)) { false }
+        val target = ScriptedTarget(listOf("{\"tool\":\"attach_file\",\"args\":{\"path\":\"~/Documents/plan.pdf\"}}", "Вижу план, всё понятно."))
+        AgentLoop(
+            target, { ex.execute(it) }, ToolExecutor::riskOf, RecordingListener(Decision.ONCE), ApprovalPolicy(ApprovalMode.AUTO_ALL),
+            takeAttachments = { queue.toList().also { queue.clear() } },
+            stepExtras = { "Новые файлы на устройстве: ~/Download/out.xlsx" },
+        ).run("Посмотри фото", true)
+        assertEquals(listOf(listOf("photo.jpg"), listOf("plan.pdf")), target.sentFiles)
+        assertTrue(target.sent[1].contains("Новые файлы на устройстве: ~/Download/out.xlsx"))
+        assertTrue(target.sent[1].contains("будет прикреплён"))
     }
 }

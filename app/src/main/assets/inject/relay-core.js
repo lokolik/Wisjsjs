@@ -7,10 +7,10 @@
  */
 (function () {
   'use strict';
-  var VERSION = '1.0.0';
+  var VERSION = '1.1.0';
   if (window.__relay && window.__relay.version === VERSION) return;
 
-  var cfg = { selectors: {}, submit: 'auto', stableMs: 2200, timeoutMs: 240000 };
+  var cfg = { selectors: {}, submit: 'auto', stableMs: 2200, timeoutMs: 240000, autoDownload: false };
   var watchers = {};
   var picker = null;
 
@@ -292,7 +292,7 @@
     var now = Date.now(), text = '', code = [], viaSel = false;
     if (cfg.selectors.response) {
       var c = candidate(w);
-      if (c) { text = nodeText(c); code = codeOf(c); viaSel = true; }
+      if (c) { text = nodeText(c); code = codeOf(c); viaSel = true; w.node = c; }
     }
     // Generic mode (no selectors, or stale ones): diff the page text against the snapshot taken before sending.
     if (!viaSel && (!cfg.selectors.response || now - w.armedAt > 8000)) {
@@ -318,7 +318,87 @@
   function finish(w, timedOut) {
     stopWatch(w.id);
     w.done = true;
-    post({ type: 'response', id: w.id, text: w.last, code: w.code || [], timeout: !!timedOut, url: location.href });
+    var files = w.node ? fileLinks(w.node) : [];
+    if (cfg.autoDownload && !timedOut) files.slice(0, 4).forEach(function (f) { try { fire(f.el); } catch (e) { /* ignore */ } });
+    post({
+      type: 'response', id: w.id, text: w.last, code: w.code || [], timeout: !!timedOut, url: location.href,
+      files: files.map(function (f) { return { name: f.name, href: f.href }; })
+    });
+  }
+
+  // ---------- files ----------
+
+  var FILE_RX = /([^\s\/\\:*?"<>|«»()]{1,80}\.(pdf|docx?|xlsx?|pptx?|csv|tsv|txt|md|json|xml|ya?ml|zip|rar|7z|png|jpe?g|webp|gif|svg|mp3|wav|m4a|ogg|mp4|mov|webm|py|js|ts|kt|java|html?|css|sql|sh|apk|epub|rtf|odt|ods))(?![\w.])/i;
+
+  /** Download links and file buttons inside a reply. */
+  function fileLinks(root) {
+    var out = [], seen = [];
+    qsa('a[href], a[download], button, [role="button"]', root).forEach(function (el) {
+      if (seen.indexOf(el) >= 0 || !visible(el)) return;
+      var label = norm(el.getAttribute('download') || el.innerText || el.getAttribute('aria-label') || '');
+      var href = el.getAttribute('href') || '';
+      var m = FILE_RX.exec(label) || FILE_RX.exec(href.split('?')[0]);
+      var isDl = el.hasAttribute('download') || /^(download|скачать)/i.test(label);
+      if (!m && !isDl) return;
+      seen.push(el);
+      out.push({ el: el, name: m ? m[1] : (label || 'file'), href: el.href || '' });
+    });
+    return out;
+  }
+
+  function b64ToBytes(b64) {
+    var bin = atob(b64), bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  }
+
+  function accepts(input, file) {
+    var acc = (input.getAttribute('accept') || '').trim();
+    if (!acc) return true;
+    return acc.split(',').some(function (a) {
+      a = a.trim().toLowerCase();
+      if (!a) return false;
+      if (a[0] === '.') return file.name.toLowerCase().slice(-a.length) === a;
+      if (a.slice(-2) === '/*') return file.type.indexOf(a.slice(0, -1)) === 0;
+      return file.type === a;
+    });
+  }
+
+  /** Gives files to the page the way a user would: file input, else paste, else drop onto the composer. */
+  function attach(list) {
+    var files = (list || []).map(function (f) {
+      return new File([b64ToBytes(f.b64 || '')], f.name || 'file', { type: f.mime || 'application/octet-stream' });
+    });
+    if (!files.length) return { ok: false, via: 'none' };
+    var dt = new DataTransfer();
+    files.forEach(function (f) { dt.items.add(f); });
+    var editor = findInput();
+    var inputs = qsa('input[type="file"]').filter(function (i) {
+      return !i.disabled && files.every(function (f) { return accepts(i, f); }) && (files.length === 1 || i.multiple);
+    });
+    if (inputs.length) {
+      var near = editor && inputs.filter(function (i) { var f = editor.closest('form'); return f && f.contains(i); })[0];
+      var target = near || inputs[inputs.length - 1];
+      target.files = dt.files;
+      target.dispatchEvent(new Event('input', { bubbles: true }));
+      target.dispatchEvent(new Event('change', { bubbles: true }));
+      return { ok: true, via: 'input', count: files.length };
+    }
+    if (editor) {
+      editor.focus();
+      var pasted = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
+      var handled = !editor.dispatchEvent(pasted);
+      if (handled) return { ok: true, via: 'paste', count: files.length };
+      var drop = new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true });
+      if (!editor.dispatchEvent(drop)) return { ok: true, via: 'drop', count: files.length };
+    }
+    return { ok: false, via: 'none' };
+  }
+
+  function sendable(input) {
+    var b = findSend(input);
+    if (!b) return true;
+    return !b.disabled && b.getAttribute('aria-disabled') !== 'true';
   }
 
   function stopWatch(id) {
@@ -326,7 +406,8 @@
     if (w) { clearInterval(w.timer); delete watchers[id]; }
   }
 
-  function send(text, id) {
+  function send(text, id, opts) {
+    opts = opts || {};
     try {
       var input = findInput();
       if (!input) {
@@ -336,8 +417,12 @@
       watch(id, text);
       var w = watchers[id];
       if (!setInput(input, text)) log('text may not have been inserted');
-      setTimeout(function () {
+      var waitUntil = Date.now() + (opts.attachments ? 45000 : 0);
+      var go = function () {
         if (!watchers[id]) return;
+        // With attachments the send button stays disabled while files upload.
+        if (Date.now() < waitUntil && !sendable(findInput() || input)) { setTimeout(go, 400); return; }
+        input = findInput() || input;
         submit(input);
         w.armed = true;
         w.armedAt = Date.now();
@@ -357,7 +442,8 @@
             }
           }
         }, 1500);
-      }, 350);
+      };
+      setTimeout(go, 350);
       return true;
     } catch (e) {
       post({ type: 'error', id: id, message: 'Relay: ' + ((e && e.message) || e) });
@@ -593,6 +679,7 @@
     cfg.submit = c.submit || 'auto';
     cfg.stableMs = c.stableMs || 2200;
     cfg.timeoutMs = c.timeoutMs || 240000;
+    cfg.autoDownload = !!c.autoDownload;
     return true;
   }
 
@@ -609,7 +696,7 @@
 
   function diagnose(selectors) {
     var saved = cfg.selectors;
-    if (selectors) configure({ selectors: selectors, submit: cfg.submit, stableMs: cfg.stableMs, timeoutMs: cfg.timeoutMs });
+    if (selectors) configure({ selectors: selectors, submit: cfg.submit, stableMs: cfg.stableMs, timeoutMs: cfg.timeoutMs, autoDownload: cfg.autoDownload });
     try {
       var input = findInput();
       var counts = {};
@@ -639,6 +726,7 @@
     watch: watch,
     cancel: cancel,
     pick: pick,
+    attach: attach,
     unpick: unpick,
     _: { findInput: findInput, findSend: findSend, selectorFor: selectorFor, diffMiddle: diffMiddle, stripEcho: stripEcho, isBusy: isBusy }
   };

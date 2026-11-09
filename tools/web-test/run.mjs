@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const assets = path.resolve(here, '../../app/src/main/assets');
 const outDir = path.join(here, 'out');
+fs.rmSync(outDir, { recursive: true, force: true });
 fs.mkdirSync(outDir, { recursive: true });
 const out = (name) => path.join(outDir, name);
 
@@ -39,7 +40,7 @@ async function test(name, fn) {
     console.log('✓', name);
   } catch (e) {
     failures++;
-    console.log('✗', name, '\n   ', e.message.split('\n').slice(0, 6).join('\n    '));
+    console.log('✗', name, '\n   ', e.message.split('\n').slice(0, 8).join('\n    '));
   }
 }
 
@@ -52,11 +53,11 @@ const CHAT_SELECTORS = {
   projectLink: 'a[href^="/project/"]'
 };
 
-async function chatPage(mode, selectors) {
+async function chatPage(mode, selectors, extra = {}) {
   const page = await browser.newPage({ viewport: { width: 1000, height: 800 } });
   await page.goto(`${base}/chat${mode ? '?mode=' + mode : ''}`);
   await page.addScriptTag({ content: core });
-  await page.evaluate((s) => window.__relay.configure({ selectors: s, stableMs: 900, timeoutMs: 20000 }), selectors);
+  await page.evaluate(([s, x]) => window.__relay.configure(Object.assign({ selectors: s, stableMs: 900, timeoutMs: 20000 }, x)), [selectors, extra]);
   return page;
 }
 
@@ -66,6 +67,8 @@ async function nextEvent(page, type, id, timeout = 15000) {
     [type, id], { timeout });
   return h.jsonValue();
 }
+
+const b64 = (s) => Buffer.from(s, 'utf8').toString('base64');
 
 // ---------------- relay-core.js ----------------
 
@@ -130,6 +133,39 @@ await test('core: second message waits for the new reply, not the previous one',
   await page.close();
 });
 
+await test('core: attaches files through the site file input, waits for upload, then sends', async () => {
+  const page = await chatPage('', CHAT_SELECTORS);
+  const res = await page.evaluate((data) => window.__relay.attach([
+    { name: 'отчёт.pdf', mime: 'application/pdf', b64: data.pdf },
+    { name: 'notes.txt', mime: 'text/plain', b64: data.txt }
+  ]), { pdf: b64('%PDF-1.4 fake'), txt: b64('hello') });
+  assert.deepEqual(res, { ok: true, via: 'input', count: 2 });
+  assert.deepEqual(await page.evaluate(() => window.__files), ['отчёт.pdf:13:application/pdf', 'notes.txt:5:text/plain']);
+  // The send button is disabled while "uploading"; send() must wait for it.
+  await page.evaluate(() => window.__relay.send('Что в файлах?', 'f1', { attachments: 2 }));
+  const ev = await nextEvent(page, 'response', 'f1', 20000);
+  assert.match(ev.text, /Готово/);
+  assert.deepEqual(await page.evaluate(() => window.__sent), ['Что в файлах?']);
+  await page.close();
+});
+
+await test('core: falls back to pasting files when the site has no file input', async () => {
+  const page = await chatPage('paste', CHAT_SELECTORS);
+  const res = await page.evaluate((d) => window.__relay.attach([{ name: 'photo.png', mime: 'image/png', b64: d }]), b64('png'));
+  assert.equal(res.via, 'paste');
+  assert.deepEqual(await page.evaluate(() => window.__files), ['photo.png:3:image/png']);
+  await page.close();
+});
+
+await test('core: downloads files from the reply automatically', async () => {
+  const page = await chatPage('', CHAT_SELECTORS, { autoDownload: true });
+  await page.evaluate(() => window.__relay.send('Пришли файл с таблицей', 'd1'));
+  const ev = await nextEvent(page, 'response', 'd1');
+  assert.deepEqual(ev.files.map((f) => f.name), ['report.csv']);
+  assert.deepEqual(await page.evaluate(() => window.__downloads), ['report.csv']);
+  await page.close();
+});
+
 await test('core: picker turns taps into selectors', async () => {
   const page = await chatPage('', {});
   const cases = [
@@ -184,84 +220,169 @@ async function uiPage(viewport, query, mobile = true) {
   await page.goto(`${base}/assets/ui/index.html${query || ''}`);
   return { page, ctx, errors };
 }
+const PHONE = { width: 390, height: 844 };
+const TABLET = { width: 1180, height: 820 };
+const connected = (page) => page.waitForFunction(() => document.querySelector('#topSub').textContent.includes('подключено'));
+const idle = (page) => page.waitForFunction(() => !window.relayUI._state.busy, null, { timeout: 20000 });
 
-await test('ui: phone — onboarding, connect, agent task with approval', async () => {
-  const { page, ctx, errors } = await uiPage({ width: 390, height: 844 }, '?fresh=1');
-  await page.waitForSelector('.hero h1');
-  await page.screenshot({ path: out('01-phone-onboarding.png') });
-
-  await page.click('.hero [data-act="services"]');
-  await page.waitForSelector('.tile[data-pick="chatgpt"]');
+await test('ui: first run — wizard checks the phone, finds AI apps and auto-sets one up', async () => {
+  const { page, ctx, errors } = await uiPage(PHONE, '?fresh=1');
+  await page.waitForSelector('.sheet .wiz-steps');
   await page.waitForTimeout(400);
-  await page.screenshot({ path: out('02-phone-services.png') });
+  await page.screenshot({ path: out('01-wizard-phone.png') });
 
-  await page.click('.tile[data-pick="chatgpt"]');
-  await page.waitForFunction(() => document.querySelector('#topSub').textContent.includes('подключено'));
-  await page.screenshot({ path: out('03-phone-connected.png') });
+  await page.click('[data-act="auto-setup"]');
+  await page.waitForFunction(() => window.relayUI._state.device.accessibility === true);
+  await page.click('[data-act="wiz-next"]');
+  await page.waitForSelector('[data-wizapp]');
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: out('02-wizard-apps.png') });
+  assert.equal(await page.locator('[data-wizapp]').count(), 4, 'four installed AI apps');
+  assert.ok(await page.locator('details.more [data-install]').count() >= 5, 'install buttons for missing apps');
 
+  await page.click('[data-wizapp="app-hark"]');
+  await page.click('[data-act="wiz-next"]');
+  await page.click('[data-act="wiz-run"]');
+  await page.waitForSelector('.cal-result.ok', { timeout: 15000 });
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: out('03-wizard-autosetup.png') });
+  assert.equal(await page.locator('.cal-step.done').count(), 7);
+
+  await page.click('[data-act="wiz-finish"]');
+  await connected(page);
+  assert.equal(await page.locator('#topSub').innerText().then((t) => t.includes('Hark Pro')), true);
   await page.click('#menuBtn');
-  await page.waitForSelector('.chat-item');
+  await page.waitForSelector('.chat-item >> text=Переезд');
   await page.waitForTimeout(400);
-  await page.screenshot({ path: out('04-phone-drawer.png') });
-  assert.equal(await page.locator('.chat-item').count(), 7);
-  await page.click('#scrim', { position: { x: 370, y: 420 } });
-  await page.waitForTimeout(400);
+  await page.screenshot({ path: out('04-app-chats.png') });
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
 
+await test('ui: app — agent task with approval', async () => {
+  const { page, ctx, errors } = await uiPage(PHONE, '');
+  await connected(page);
   await page.fill('#input', 'Создай папку «привет» в Загрузках');
   await page.click('#sendBtn');
   await page.waitForSelector('.tool.ask [data-approve="once"]');
   await page.waitForTimeout(300);
-  await page.screenshot({ path: out('05-phone-approval.png') });
-
+  await page.screenshot({ path: out('05-approval.png') });
   await page.click('[data-approve="once"]');
   await page.waitForSelector('.tool .status.done');
-  await page.waitForFunction(() => !window.relayUI._state.busy, null, { timeout: 15000 });
+  await idle(page);
   await page.waitForTimeout(300);
-  await page.screenshot({ path: out('06-phone-done.png') });
-
+  await page.screenshot({ path: out('06-done.png') });
   const texts = await page.locator('.msg.ai .bubble').allInnerTexts();
   assert.ok(texts.some((t) => t.includes('Готово')), 'final assistant message rendered');
-  assert.equal(await page.locator('.msg.user').count(), 1);
   assert.deepEqual(errors, []);
   await ctx.close();
 });
 
-await test('ui: phone — settings sheet with MCP enabled', async () => {
-  const { page, ctx, errors } = await uiPage({ width: 390, height: 844 }, '');
-  await page.waitForFunction(() => document.querySelector('#topSub').textContent.includes('подключено'));
+await test('ui: long reply is collapsed, expands in place and opens in the reader', async () => {
+  const { page, ctx, errors } = await uiPage(PHONE, '');
+  await connected(page);
+  await page.fill('#input', 'Расскажи подробно, как спланировать переезд');
+  await page.click('#sendBtn');
+  await page.waitForSelector('.msg.ai.collapsed .expand', { timeout: 20000 });
+  await idle(page);
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: out('07-long-collapsed.png') });
+  const collapsedH = await page.locator('.msg.ai.collapsed .bubble').evaluate((e) => e.getBoundingClientRect().height);
+  assert.ok(collapsedH <= 345, `collapsed height ${collapsedH}`);
+  await page.click('.msg.ai .expand');
+  await page.waitForSelector('.msg.ai:not(.collapsed) .expand');
+  const fullH = await page.locator('.msg.ai .bubble').last().evaluate((e) => e.getBoundingClientRect().height);
+  assert.ok(fullH > collapsedH + 300, `expanded height ${fullH}`);
+  await page.click('[data-read]');
+  await page.waitForSelector('.sheet .reader');
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: out('08-reader.png') });
+  assert.match(await page.locator('.sheet .reader').innerText(), /После переезда/);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+await test('ui: attach a file, AI returns a file that lands in Downloads', async () => {
+  const { page, ctx, errors } = await uiPage(PHONE, '');
+  await connected(page);
+  await page.click('#attachBtn');
+  await page.waitForSelector('.att-row .att-chip');
+  await page.fill('#input', 'Сделай таблицу расходов из отчёта');
+  await page.waitForTimeout(200);
+  await page.screenshot({ path: out('09-attachment.png') });
+  await page.click('#sendBtn');
+  await page.waitForSelector('.files-card .file-row', { timeout: 15000 });
+  await idle(page);
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: out('10-file-from-ai.png') });
+  assert.equal(await page.locator('.msg.user .msg-files .att-chip').count(), 1);
+  assert.equal(await page.locator('.att-row .att-chip').count(), 0, 'composer cleared');
+  assert.match(await page.locator('.files-card').innerText(), /расходы-октябрь\.xlsx/);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+await test('ui: services sheet lists installed apps first and offers to install the rest', async () => {
+  const { page, ctx, errors } = await uiPage(PHONE, '');
+  await connected(page);
+  await page.click('#menuBtn');
+  await page.click('#connBtn');
+  await page.waitForSelector('.sheet .tile[data-pick="app-hark"]');
+  await page.waitForTimeout(400);
+  await page.screenshot({ path: out('11-services.png') });
+  assert.equal(await page.locator('.sheet .tile .tile-ok').count(), 4);
+  assert.equal(await page.locator('.sheet [data-app="com.quora.poe"]').count(), 1, 'discovered AI app');
+  await page.click('.sheet details.more summary');
+  await page.click('.sheet [data-install="com.google.android.apps.bard"]');
+  await page.waitForSelector('.toast >> text=Google Play');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+await test('ui: app that is not installed shows an install banner', async () => {
+  const { page, ctx, errors } = await uiPage(PHONE, '?adapter=app-gemini');
+  await page.waitForSelector('#banner [data-install="com.google.android.apps.bard"]');
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: out('12-not-installed.png') });
+  assert.match(await page.locator('#topSub').innerText(), /не установлено/);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+await test('ui: settings — app section, files and MCP', async () => {
+  const { page, ctx, errors } = await uiPage(PHONE, '');
+  await connected(page);
   await page.click('#menuBtn');
   await page.click('#settingsBtn');
-  await page.waitForSelector('.sheet [data-act="mcp"]');
-  await page.locator('.sheet [data-setting="approvalMode"]').scrollIntoViewIfNeeded();
+  await page.waitForSelector('.sheet [data-act="dump"]');
   await page.waitForTimeout(300);
-  await page.screenshot({ path: out('07a-phone-settings-agent.png') });
+  await page.screenshot({ path: out('13-settings-app.png') });
   await page.click('.sheet .switch:has([data-act="mcp"])');
   await page.waitForSelector('.sheet .codebox');
-  await page.waitForTimeout(300);
-  await page.screenshot({ path: out('07-phone-settings.png') });
   assert.ok((await page.locator('.sheet .codebox').first().innerText()).includes('/mcp'));
+  assert.equal(await page.locator('.sheet [data-toggle="autoDownload"]').isChecked(), true);
   assert.deepEqual(errors, []);
   await ctx.close();
 });
 
-await test('ui: tablet — two-pane layout, read-only tool', async () => {
-  const { page, ctx, errors } = await uiPage({ width: 1180, height: 820 }, '', true);
-  await page.waitForSelector('.chat-item');
+await test('ui: tablet — two-pane layout with app chats and a read-only tool', async () => {
+  const { page, ctx, errors } = await uiPage(TABLET, '', true);
+  await page.waitForSelector('.chat-item >> text=Работа');
   assert.ok(await page.locator('#sidebar').isVisible());
   await page.fill('#input', 'Покажи, что лежит в Загрузках');
   await page.click('#sendBtn');
   await page.waitForSelector('[data-approve="once"]');
   await page.click('[data-approve="once"]');
-  await page.waitForFunction(() => !window.relayUI._state.busy, null, { timeout: 15000 });
+  await idle(page);
   await page.click('.tool details summary');
   await page.waitForTimeout(300);
-  await page.screenshot({ path: out('08-tablet.png') });
+  await page.screenshot({ path: out('14-tablet.png') });
   assert.deepEqual(errors, []);
   await ctx.close();
 });
 
-await test('ui: tablet — service editor with picker and diagnostics', async () => {
-  const { page, ctx, errors } = await uiPage({ width: 1180, height: 820 }, '', true);
+await test('ui: tablet — site editor with picker and diagnostics', async () => {
+  const { page, ctx, errors } = await uiPage(TABLET, '?adapter=chatgpt', true);
   await page.waitForSelector('.chat-item');
   await page.click('#connBtn');
   await page.click('.tile[data-pick="chatgpt"] .tile-edit');
@@ -271,7 +392,7 @@ await test('ui: tablet — service editor with picker and diagnostics', async ()
   await page.click('.sheet [data-act="diagnose"]');
   await page.waitForSelector('.sheet .diag');
   await page.waitForTimeout(300);
-  await page.screenshot({ path: out('09-tablet-editor.png') });
+  await page.screenshot({ path: out('15-tablet-site-editor.png') });
   assert.deepEqual(errors, []);
   await ctx.close();
 });
