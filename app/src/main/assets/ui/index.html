@@ -48,9 +48,12 @@
       <button class="icon-btn boxed" id="siteBtn" type="button" title="Открыть сайт" aria-label="Открыть сайт"></button>
     </header>
     <div class="banner" id="banner" hidden></div>
-    <section class="thread" id="thread" aria-live="polite">
-      <div class="thread-inner" id="threadInner"></div>
-    </section>
+    <div class="thread-wrap">
+      <section class="thread" id="thread" aria-live="polite">
+        <div class="thread-inner" id="threadInner"></div>
+      </section>
+      <button class="jump-btn" id="jumpBtn" type="button" hidden aria-label="К последнему сообщению"></button>
+    </div>
     <footer class="composer">
       <div class="composer-box" id="composerBox">
         <div class="att-row" id="attRow" hidden></div>

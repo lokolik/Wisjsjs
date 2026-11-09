@@ -97,7 +97,8 @@
     needsAccessibility: ['включите спец. возможности', 'bad'],
     notInstalled: ['не установлено', 'bad']
   };
-  const STATUS_TEXT = { pending: 'ждёт ответа', running: 'выполняется', done: 'готово', error: 'ошибка', denied: 'отклонено' };
+  const STATUS_TEXT = { pending: 'ждёт ответа', running: 'выполняется', done: 'готово', error: 'ошибка', denied: 'отклонено', stale: 'прервано' };
+  const BUSY_TEXT = 'Агент работает — дождитесь ответа или нажмите «Стоп»';
   const PICK_LABELS = {
     input: ['Поле ввода', 'Куда Relay вставляет сообщение'],
     send: ['Кнопка «Отправить»', 'Пусто — нажатие Enter'],
@@ -132,11 +133,18 @@
     adapters: [], discovered: [], adapter: null, state: 'idle', url: '', chats: [], chatsAt: 0, key: null, msgs: [],
     settings: {}, device: {}, mcp: {}, apps: null, version: '', attachments: [], onboarded: true,
     busy: false, partial: '', lastTurnEnd: 0, agent: localStorage.getItem('relay.agent') !== '0',
-    filter: '', sheet: null, editor: null, diag: null, wiz: null, calib: null
+    filter: '', sheet: null, editor: null, diag: null, wiz: null, calib: null,
+    pinned: true, unseen: false, live: new Set()
   };
 
   const store = {
-    load(key) { try { return JSON.parse(localStorage.getItem('relay.h.' + key) || '[]'); } catch (e) { return []; } },
+    load(key) {
+      let list;
+      try { list = JSON.parse(localStorage.getItem('relay.h.' + key) || '[]'); } catch (e) { list = []; }
+      // Approval/running cards stay interactive only while the host is still waiting on that call.
+      return list.map((m) => (m.role === 'tool' && (m.needsApproval || m.status === 'running' || m.status === 'pending') && !S.live.has(m.id)
+        ? Object.assign({}, m, { needsApproval: false, status: 'stale' }) : m));
+    },
     save(key, msgs) {
       if (!key) return;
       try { localStorage.setItem('relay.h.' + key, JSON.stringify(msgs.filter((m) => !m.ephemeral).slice(-200))); } catch (e) { /* quota */ }
@@ -232,7 +240,10 @@
     const a = S.adapter;
     let html = '';
     b.className = 'banner';
-    if (a && S.state === 'login') {
+    if (!window.RelayHost) {
+      b.className = 'banner bad';
+      html = `${ic('alert')}<span class="txt">Нет связи с приложением Relay. Закройте его и откройте заново.</span>`;
+    } else if (a && S.state === 'login') {
       html = `${ic('login')}<span class="txt"><b>Войдите в ${esc(a.name)}</b> один раз — своим обычным аккаунтом. Relay запомнит сессию.</span><button class="btn sm" data-act="site">Открыть</button>`;
     } else if (a && S.state === 'needsAccessibility') {
       b.className = 'banner bad';
@@ -373,7 +384,8 @@
   }
 
   function toolNode(m) {
-    const meta = TOOLS[m.tool] || { icon: 'sparkles', name: m.tool, label: () => code(JSON.stringify(m.args)) };
+    const meta = Object.prototype.hasOwnProperty.call(TOOLS, m.tool) ? TOOLS[m.tool]
+      : { icon: 'sparkles', name: m.tool, label: () => code(JSON.stringify(m.args)) };
     const args = m.args || {};
     const risk = m.risk || 'WRITE';
     const src = m.source === 'mcp' ? '<span class="chip accent">MCP</span>' : '';
@@ -443,13 +455,19 @@
   function renderThread() {
     const inner = $('#threadInner');
     inner.innerHTML = '';
+    S.unseen = false;
     if (!S.msgs.length && !S.busy) {
+      // The empty-chat hero reads from the top; it must not be glued to the bottom on resizes.
+      S.pinned = false;
       inner.appendChild(heroNode());
+      $('#thread').scrollTop = 0;
+      renderJump();
       return;
     }
+    S.pinned = true;
     S.msgs.forEach((m) => inner.appendChild(msgNode(m)));
     renderLive(false);
-    scrollDown();
+    scrollDown(true);
   }
 
   function renderLive(scroll = true) {
@@ -461,14 +479,59 @@
     if (scroll) scrollDown();
   }
 
-  function scrollDown() {
+  // ---------- thread scrolling ----------
+  // The thread sticks to the newest message unless the user scrolled up. Keyboard, rotation and streaming
+  // resizes re-pin it; otherwise the "↓" button offers the way back.
+
+  const NEAR_BOTTOM = 72;
+  let userScrollAt = 0;
+
+  function scrollDown(force) {
     const t = $('#thread');
-    requestAnimationFrame(() => { t.scrollTop = t.scrollHeight; });
+    if (force) S.pinned = true;
+    if (S.pinned) {
+      t.scrollTop = t.scrollHeight;
+      S.unseen = false;
+    }
+    renderJump();
+  }
+
+  function renderJump() {
+    const b = $('#jumpBtn');
+    if (!b) return;
+    b.hidden = S.pinned || (!S.msgs.length && !S.busy);
+    b.classList.toggle('new', !!S.unseen);
+  }
+
+  function initScroll() {
+    const t = $('#thread');
+    const inner = $('#threadInner');
+    $('#jumpBtn').innerHTML = ic('chevron');
+    const mark = () => { userScrollAt = Date.now(); };
+    ['wheel', 'touchstart', 'touchmove', 'pointerdown', 'keydown'].forEach((ev) => t.addEventListener(ev, mark, { passive: true }));
+    t.addEventListener('scroll', () => {
+      const near = t.scrollHeight - t.scrollTop - t.clientHeight <= NEAR_BOTTOM;
+      // Layout-driven scroll events (keyboard, rotation) must not unpin; only a user gesture can.
+      if (near) { S.pinned = true; S.unseen = false; } else if (Date.now() - userScrollAt < 1500) S.pinned = false;
+      renderJump();
+    }, { passive: true });
+    if (!window.ResizeObserver) return;
+    let lastHeight = inner.offsetHeight;
+    const ro = new ResizeObserver(() => {
+      const h = inner.offsetHeight;
+      if (S.pinned) t.scrollTop = t.scrollHeight;
+      else if (h > lastHeight) S.unseen = true;
+      lastHeight = h;
+      renderJump();
+    });
+    ro.observe(t);
+    ro.observe(inner);
   }
 
   function pushMsg(m) {
     m.id = m.id || uid();
     m.ts = Date.now();
+    if (m.role === 'user' || !S.msgs.length) S.pinned = true;
     const hero = $('.hero', $('#threadInner'));
     if (hero) hero.remove();
     S.msgs.push(m);
@@ -503,6 +566,8 @@
   function selectAdapter(id) {
     const a = S.adapters.find((x) => x.id === id);
     if (!a) return;
+    // Replies of a running turn would otherwise land in (and be saved to) the newly opened chat.
+    if (S.busy && S.adapter && S.adapter.id !== id) { toast(BUSY_TEXT); return; }
     S.adapter = a;
     S.state = 'loading';
     S.chats = [];
@@ -792,7 +857,9 @@
     const out = {};
     ['id', 'name', 'kind', 'group', 'domain', 'url', 'newChatUrl', 'color', 'icon', 'desktop', 'submit', 'singleThread', 'singleThreadTitle', 'note', 'package'].forEach((k) => { if (e[k] !== undefined && e[k] !== '') out[k] = e[k]; });
     const sel = {};
-    Object.keys(e.selectors || {}).forEach((k) => { if (e.selectors[k]) sel[k] = e.selectors[k]; });
+    const before = (S.adapters.find((a) => a.id === e.id) || {}).selectors || {};
+    // A cleared field is sent as "" so the host can drop a built-in selector instead of keeping it.
+    Object.keys(e.selectors || {}).forEach((k) => { if (e.selectors[k] || before[k]) sel[k] = e.selectors[k] || ''; });
     out.selectors = sel;
     if (out.url && !out.domain) out.domain = hostOf(out.url);
     return out;
@@ -922,9 +989,12 @@
         break;
       }
       case 'tool':
+        if (msg.status === 'pending' || msg.status === 'running') S.live.add(msg.call.id);
+        else S.live.delete(msg.call.id);
         upsertTool(msg.call, { status: msg.status, risk: msg.risk, result: msg.result || null, source: msg.source, needsApproval: false });
         break;
       case 'approval':
+        S.live.add(msg.call.id);
         upsertTool(msg.call, { status: 'pending', risk: msg.risk, source: msg.source, needsApproval: true });
         if (S.sheet || $('#app').classList.contains('drawer-open')) toast('Нужно ваше подтверждение');
         break;
@@ -1038,10 +1108,16 @@
     if (d.wizapp) { S.wiz.app = d.wizapp; refreshSheet(wizardHtml()); return; }
     if (d.reset) { host('resetSetup', { id: d.reset }); return; }
     if (d.suggest) { $('#input').value = d.suggest; autosize(); renderComposer(); $('#input').focus(); return; }
-    if (d.href) { handleUrl(d.href); host('openChat', { href: d.href }); openDrawer(false); return; }
+    if (d.href) {
+      // The site WebView is shared by all chats of a service, and replies of a running turn would land in
+      // the newly opened chat: switching waits until the turn ends.
+      if (S.busy && normUrl(d.href) !== normUrl(S.url)) { toast(BUSY_TEXT); return; }
+      handleUrl(d.href); host('openChat', { href: d.href }); openDrawer(false); return;
+    }
     if (d.edit) { e.stopPropagation(); openEditor(d.edit); return; }
     if (d.del) { e.stopPropagation(); host('deleteAdapter', { id: d.del }); return; }
     if (d.pick) {
+      if (S.busy && S.adapter && S.adapter.id !== d.pick) { toast(BUSY_TEXT); return; }
       const a = S.adapters.find((x) => x.id === d.pick);
       closeSheet();
       if (!S.adapter || S.adapter.id !== d.pick) selectAdapter(d.pick);
@@ -1122,6 +1198,7 @@
       case 'a11y': host('perm', { which: 'accessibility' }); break;
       case 'connBtn': case 'titleBtn': openServices(); break;
       case 'newChatBtn':
+        if (S.busy) { toast(BUSY_TEXT); break; }
         if (S.adapter && isApp(S.adapter)) {
           const k = keyFor(appHome(S.adapter) + '#new');
           store.save(k, []);
@@ -1129,6 +1206,7 @@
         }
         host('newChat'); openDrawer(false);
         break;
+      case 'jumpBtn': scrollDown(true); break;
       case 'refreshBtn': host('refreshChats'); if (!isApp(S.adapter)) toast('Обновляю список…'); break;
       case 'settingsBtn': openSettings(); break;
       case 'menuBtn': openDrawer(true); break;
@@ -1154,6 +1232,7 @@
 
   function init() {
     renderStatic();
+    initScroll();
     document.addEventListener('click', onClick);
     document.addEventListener('change', onChange);
     $('#scrim').addEventListener('click', () => openDrawer(false));

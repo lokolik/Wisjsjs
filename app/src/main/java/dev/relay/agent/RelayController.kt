@@ -91,12 +91,14 @@ class RelayController(
         listOf("Download", "Documents", "Pictures", "Movies", "Music").map { File(r, it) }
     })
 
+    private class PendingApproval(val source: String, val decision: CompletableDeferred<Decision>)
+
     private val sessions = LinkedHashMap<String, SiteSession>()
     private var current: JSONObject? = null
     private var runJob: Job? = null
     private var appJob: Job? = null
     private var chatsJob: Job? = null
-    private val pendingApprovals = ConcurrentHashMap<String, CompletableDeferred<Decision>>()
+    private val pendingApprovals = ConcurrentHashMap<String, PendingApproval>()
     private var mcp: McpServer? = null
     private var picking: String? = null
     private var siteShown = false
@@ -162,7 +164,7 @@ class RelayController(
             "newChat" -> newChat()
             "send" -> send(m.getString("text"), m.optBoolean("agent", true), m.optJSONArray("attachments"))
             "stop" -> stop()
-            "approve" -> pendingApprovals[m.getString("callId")]?.complete(
+            "approve" -> pendingApprovals[m.getString("callId")]?.decision?.complete(
                 when (m.optString("decision")) {
                     "always" -> Decision.ALWAYS
                     "once" -> Decision.ONCE
@@ -323,17 +325,22 @@ class RelayController(
 
     private fun onSiteEvent(s: SiteSession, ev: JSONObject) {
         when (ev.optString("type")) {
-            "pageLoaded" -> if (s === currentSession()) {
-                scope.launch {
-                    refreshStatus(s)
-                    emit(JSONObject().put("type", "url").put("adapterId", s.id).put("url", ev.optString("url")))
+            "pageLoaded" -> {
+                if (s === currentSession()) {
+                    scope.launch {
+                        refreshStatus(s)
+                        emit(JSONObject().put("type", "url").put("adapterId", s.id).put("url", ev.optString("url")))
+                    }
+                    scheduleChats(s)
                 }
-                scheduleChats(s)
             }
-            "urlChanged" -> if (s === currentSession()) {
-                emit(JSONObject().put("type", "url").put("adapterId", s.id).put("url", ev.optString("url")))
-                scheduleChats(s)
+            "urlChanged" -> {
+                if (s === currentSession()) {
+                    emit(JSONObject().put("type", "url").put("adapterId", s.id).put("url", ev.optString("url")))
+                    scheduleChats(s)
+                }
             }
+            "crashed" -> onSiteCrashed(s)
             "picked", "pickCancelled" -> {
                 picking = null
                 showSite(false)
@@ -343,19 +350,35 @@ class RelayController(
         }
     }
 
+    /** Without handling, a dead renderer kills the whole app; the site is rebuilt instead. */
+    private fun onSiteCrashed(s: SiteSession) {
+        if (sessions[s.id] !== s) return
+        sessions.remove(s.id)
+        siteFrame.removeView(s.webView)
+        s.destroy()
+        if (current?.optString("id") != s.id) return
+        picking = null
+        if (siteShown) showSite(false)
+        toast("Страница ${s.adapter.optString("name")} аварийно закрылась — открываю заново")
+        selectAdapter(s.id)
+    }
+
     private fun scheduleChats(s: SiteSession) {
         chatsJob?.cancel()
         chatsJob = scope.launch {
-            for (d in longArrayOf(900, 2500, 6000)) {
+            // Sites render their history lazily, so keep polling a bit longer while the list is still empty.
+            for ((i, d) in CHAT_POLL_MS.withIndex()) {
                 delay(d)
                 if (s !== currentSession()) return@launch
-                emitChats(s)
+                val found = emitChats(s)
                 refreshStatus(s)
+                if (found > 0 && i >= 2) return@launch
             }
         }
     }
 
-    private suspend fun emitChats(s: SiteSession) {
+    /** @return how many chats were found on the page. */
+    private suspend fun emitChats(s: SiteSession): Int {
         val items = runCatching { s.listChats() }.getOrDefault(JSONArray())
         val a = s.adapter
         if (a.optBoolean("singleThread")) {
@@ -367,6 +390,7 @@ class RelayController(
         } else {
             emit(JSONObject().put("type", "chats").put("adapterId", s.id).put("items", items))
         }
+        return items.length()
     }
 
     private fun emitAppChats(a: JSONObject) {
@@ -412,6 +436,13 @@ class RelayController(
         }
     }
 
+    /** The site WebView is shared by all chats of a service, so navigating mid-turn would abandon the reply. */
+    private fun busyNavigating(): Boolean {
+        if (runJob?.isActive != true) return false
+        toast(BUSY_TEXT)
+        return true
+    }
+
     private fun openChat(href: String) {
         val a = current ?: return
         if (isApp(a)) {
@@ -422,6 +453,7 @@ class RelayController(
             return
         }
         val s = currentSession() ?: return
+        if (busyNavigating()) return
         s.navigate(href)
         emit(JSONObject().put("type", "url").put("adapterId", s.id).put("url", href))
     }
@@ -436,6 +468,7 @@ class RelayController(
             return
         }
         val s = currentSession() ?: return
+        if (busyNavigating()) return
         val url = a.optString("newChatUrl").ifBlank { a.optString("url") }
         s.navigate(url)
         emit(JSONObject().put("type", "url").put("adapterId", s.id).put("url", url))
@@ -450,8 +483,11 @@ class RelayController(
         val id = adapter.optString("id")
         if (id.isBlank()) return emitError("У сервиса нет id")
         listOf("installed", "overridden", "custom", "builtin", "version", "calibrated").forEach { adapter.remove(it) }
+        val base = builtins.firstOrNull { it.optString("id") == id }
+        // Overrides of built-ins keep only what the user changed, so app updates still reach everything else.
+        val stored = if (base != null) adapter.diffFrom(base).put("id", id) else adapter
         val list = prefs.customAdapters.objects().filter { it.optString("id") != id }.toMutableList()
-        list += adapter
+        if (base == null || stored.length() > 1) list += stored
         prefs.customAdapters = JSONArray(list)
         val merged = findAdapter(id) ?: return
         sessions[id]?.updateAdapter(merged)
@@ -721,7 +757,7 @@ class RelayController(
 
             override fun onInfo(text: String) = emitInfo(text)
 
-            override suspend fun requestApproval(call: ToolCall, risk: Risk): Decision = askApproval(call, risk, "chat")
+            override suspend fun requestApproval(call: ToolCall, risk: Risk): Decision = askApproval(call, risk, SOURCE_CHAT)
         }
 
         runJob = scope.launch {
@@ -750,11 +786,13 @@ class RelayController(
                         prefs.markPreamble(chatKey())
                     }
                     driver?.let { d -> prefs.updateProfile(a.optString("id")) { it.put("hints", d.hints.toJson()) } }
-                    pendingApprovals.values.forEach { it.complete(Decision.DENY) }
+                    denyPending(SOURCE_CHAT)
                     newFilesNote()
                     emit(JSONObject().put("type", "turn").put("state", "end"))
                 }
             }
+            // A new conversation usually shows up in the site's list only after the reply.
+            (target as? SiteSession)?.let { if (it === currentSession()) scheduleChats(it) }
             // Downloads started by the AI app may finish a little later.
             for (wait in longArrayOf(4000, 8000)) {
                 delay(wait)
@@ -774,9 +812,14 @@ class RelayController(
     }
 
     private fun stop() {
-        pendingApprovals.values.forEach { it.complete(Decision.DENY) }
+        denyPending(SOURCE_CHAT)
         runJob?.cancel()
         appJob?.cancel()
+    }
+
+    /** Only approvals of [source] are denied: ending a chat turn must not reject a waiting MCP call. */
+    private fun denyPending(source: String) {
+        pendingApprovals.values.filter { it.source == source }.forEach { it.decision.complete(Decision.DENY) }
     }
 
     private fun approvalMode() = when (prefs.approvalMode) {
@@ -787,13 +830,14 @@ class RelayController(
 
     private suspend fun askApproval(call: ToolCall, risk: Risk, source: String): Decision {
         val d = CompletableDeferred<Decision>()
-        pendingApprovals[call.id] = d
+        pendingApprovals[call.id] = PendingApproval(source, d)
         emit(
             JSONObject().put("type", "approval").put("source", source).put("risk", risk.name)
                 .put("call", callJson(call)),
         )
         return try {
-            d.await()
+            // An MCP client holds a connection thread open for this call, so it must not wait forever.
+            if (source == SOURCE_MCP) withTimeoutOrNull(MCP_APPROVAL_TIMEOUT_MS) { d.await() } ?: Decision.DENY else d.await()
         } finally {
             pendingApprovals.remove(call.id)
         }
@@ -1042,6 +1086,7 @@ class RelayController(
     // region MCP
 
     private fun setMcp(enabled: Boolean) {
+        denyPending(SOURCE_MCP)
         mcp?.stop()
         mcp = null
         prefs.mcpEnabled = enabled
@@ -1064,7 +1109,7 @@ class RelayController(
             true
         } else {
             emit(toolJson(call, "pending", null, "mcp"))
-            when (askApproval(call, risk, "mcp")) {
+            when (askApproval(call, risk, SOURCE_MCP)) {
                 Decision.ONCE -> true
                 Decision.ALWAYS -> {
                     approvals.allowAlways(call.tool, risk)
@@ -1278,6 +1323,7 @@ class RelayController(
     // endregion
 
     fun destroy() {
+        pendingApprovals.values.forEach { it.decision.complete(Decision.DENY) }
         runJob?.cancel()
         appJob?.cancel()
         mcp?.stop()
@@ -1289,6 +1335,11 @@ class RelayController(
 
     companion object {
         private const val TAG = "Relay"
+        private const val SOURCE_CHAT = "chat"
+        private const val SOURCE_MCP = "mcp"
+        private const val BUSY_TEXT = "Агент работает — дождитесь ответа или нажмите «Стоп»"
+        private const val MCP_APPROVAL_TIMEOUT_MS = 5 * 60_000L
+        private val CHAT_POLL_MS = longArrayOf(900, 2500, 6000, 10_000)
         private val PICK_HINTS = mapOf(
             "input" to "🎯 Нажмите на поле ввода сообщения",
             "send" to "🎯 Нажмите на кнопку «Отправить»",
